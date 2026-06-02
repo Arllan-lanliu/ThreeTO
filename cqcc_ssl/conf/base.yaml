@@ -1,4 +1,5 @@
-# Speech aug: ffmpeg encode→decode round-trip (MP3 / Opus / AAC / GSM-FR).
+# CQCC + XLSR Cross-Attention -> AASIST.
+# Uses the same data, augmentation, optimizer, and evaluation strategy as conf/base.yaml.
 
 data:
   atadd_t1_train_audio: /home/new_disk/liulan/workspace/dataset/at_add_track2/train_dev
@@ -7,7 +8,6 @@ data:
   atadd_t1_dev_label:   /home/new_disk/liulan/workspace/released_model/ADD-TRACK1/protocal/protocol_gendisjoint_v1_stage1/val_gendisjoint.csv
   atadd_t1_eval_audio:  /home/new_disk/liulan/workspace/dataset/at_add_track1/eval_t1
 
-# ── SSL model paths ───────────────────────────────────────────────────────────
 ssl:
   xlsr:  /home/new_disk/liulan/workspace/otherfiles/huggingface/wav2vec2-xls-r-300m
   wavlm: /home/new_disk/liulan/workspace/otherfiles/huggingface/wavlm-large
@@ -15,22 +15,13 @@ ssl:
   beats: /home/new_disk/liulan/workspace/otherfiles/huggingface/BEATs_iter3
   clap:  /home/new_disk/liulan/workspace/otherfiles/huggingface/larger_clap_music_and_speech
 
-  # last | cat_linear | cat_proj_v1 | cat_proj_v2 | mean | weight_sum | mhfa_fuse | mhfa_pool
-  # XLSR multi-layer readout (ignored by non-XLSR frontends):
   xlsr_selected_layers: [3, 11, 24]
   xlsr_layer_fusion: cat_proj_v1
-  # WavLM multi-layer readout (ignored by non-WavLM frontends):
-  # wavlm_selected_layers: [5, 8, 11 ]
-  # wavlm_layer_fusion: cat_proj_v1
-  # BEATs multi-layer readout (ignored by non-BEATs frontends):
-  # beats_selected_layers: [3, 6, 9]
-  # beats_layer_fusion: mhfa_fuse
-
 
 filter_types: speech
 train_task: atadd-track1
-out_fold: ./ckpt_t1_ssl_layer/baseline
-model: ft-w2v2aasist              # ft-w2v2aasist   ft-wavlmaasist   ft-beatsaasist
+out_fold: ./ckpt_t1_cqcc_ssl/cross_attn
+model: ft-cqccxlsraasist
 save_best_by: loss
 assist_project_choice: 0
 
@@ -49,3 +40,4 @@ eval_steps:        1000
 full_eval_steps:   6000
 eval_warmup_steps: 6000
 patience:          20
+
