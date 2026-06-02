@@ -1,6 +1,5 @@
 import argparse
 import csv
-import json
 import os
 import sys
 from collections import defaultdict
@@ -47,37 +46,25 @@ def _find_model_checkpoint(model_path: str) -> str:
     """Same resolution as ``scripts/inference.py``."""
     all_dev_best = os.path.join(model_path, "checkpoint_all_dev", "best.pt")
     if os.path.exists(all_dev_best):
-        print("Using checkpoint_all_dev/best.pt  (best F1 on full dev set)")
+        print("Using checkpoint_all_dev/best.pt")
         return all_dev_best
 
-    top3_json = os.path.join(model_path, "checkpoint_sample_dev", "top3.json")
-    if os.path.exists(top3_json):
-        with open(top3_json, encoding="utf-8") as f:
-            entries = json.load(f)
-        if entries:
-            best_entry = entries[0]
-            ckpt = best_entry["path"]
-            if os.path.exists(ckpt):
-                metric = best_entry.get("metric", "metric")
-                val = best_entry.get("metric_val", "?")
-                print(
-                    f"Using checkpoint_sample_dev/{os.path.basename(ckpt)}"
-                    f"  (sample-dev best {metric}={val:.4f},"
-                    f" step={best_entry['step']})"
-                )
-                return ckpt
-
-    legacy = os.path.join(model_path, "atadd_model.pt")
-    if os.path.exists(legacy):
-        print("Using legacy atadd_model.pt")
-        return legacy
+    latest = os.path.join(model_path, "checkpoint", "latest.pt")
+    if os.path.exists(latest):
+        print("Using checkpoint/latest.pt")
+        latest_obj = torch.load(latest, map_location="cpu", weights_only=False)
+        if isinstance(latest_obj, dict) and "model_state_dict" in latest_obj:
+            return latest
+        raise TypeError(
+            f"{latest} does not contain a model_state_dict entry; "
+            "expected a training checkpoint saved by main_train.py."
+        )
 
     raise FileNotFoundError(
         f"No model checkpoint found in {model_path!r}.\n"
         f"Expected one of:\n"
         f"  {os.path.join(model_path, 'checkpoint_all_dev', 'best.pt')}\n"
-        f"  {top3_json} (with valid paths)\n"
-        f"  {legacy}"
+        f"  {latest}"
     )
 
 
@@ -277,7 +264,9 @@ def main():
 
     feat_model = build_model(args).to(args.device)
     ckpt_path = _find_model_checkpoint(args.model_path)
-    state = torch.load(ckpt_path, map_location=args.device)
+    state = torch.load(ckpt_path, map_location=args.device, weights_only=False)
+    if isinstance(state, dict) and "model_state_dict" in state:
+        state = state["model_state_dict"]
     feat_model.load_state_dict(state)
 
     # Enable XLSR attentions if available.

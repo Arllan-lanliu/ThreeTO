@@ -27,7 +27,9 @@ if __name__ == "__main__":
     args = _init_args()
 
     ckpt_path = _find_model_checkpoint(args.model_path)
-    checkpoint = torch.load(ckpt_path, map_location=args.device)
+    checkpoint = torch.load(ckpt_path, map_location=args.device, weights_only=False)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        checkpoint = checkpoint["model_state_dict"]
 
     print("Model:", args.model)
     model = build_model_for_inference(args)
@@ -57,4 +59,3 @@ if __name__ == "__main__":
     with open(meta_path, "w", encoding="utf-8") as mf:
         json.dump(meta, mf, indent=2)
     print(f"Threshold metadata: {meta_path}")
-

@@ -305,47 +305,33 @@ def gen_binary_score(score_file: str, binary_file: str, threshold: float = 0.5) 
 # ---------------------------------------------------------------------------
 
 def _find_model_checkpoint(model_path: str) -> str:
-    """Locate the best model checkpoint in *model_path*.
+    """Locate the checkpoint to use for inference in *model_path*.
 
     Priority:
     1. ``checkpoint_all_dev/best.pt``  — full-dev best for ``save_best_by``
-    2. ``checkpoint_sample_dev/top3.json`` → legacy fallback
-    3. Legacy ``atadd_model.pt`` at the root (backward compatibility)
+    2. ``checkpoint/latest.pt``        — latest training state fallback
     """
-    # 1. Full-dev best
     all_dev_best = os.path.join(model_path, "checkpoint_all_dev", "best.pt")
     if os.path.exists(all_dev_best):
-        print(f"Using checkpoint_all_dev/best.pt")
+        print("Using checkpoint_all_dev/best.pt")
         return all_dev_best
 
-    # 2. Sample-dev top-3 — pick the best entry (first entry is best after sorting)
-    top3_json = os.path.join(model_path, "checkpoint_sample_dev", "top3.json")
-    if os.path.exists(top3_json):
-        with open(top3_json) as f:
-            entries = json.load(f)
-        if entries:
-            best_entry = entries[0]   # top3.json is stored best-first
-            ckpt = best_entry["path"]
-            if os.path.exists(ckpt):
-                metric = best_entry.get("metric", "metric")
-                val    = best_entry.get("metric_val", "?")
-                print(f"Using checkpoint_sample_dev/{os.path.basename(ckpt)}"
-                      f"  (sample-dev best {metric}={val:.4f},"
-                      f" step={best_entry['step']})")
-                return ckpt
-
-    # 3. Legacy
-    legacy = os.path.join(model_path, "atadd_model.pt")
-    if os.path.exists(legacy):
-        print(f"Using legacy atadd_model.pt")
-        return legacy
+    latest = os.path.join(model_path, "checkpoint", "latest.pt")
+    if os.path.exists(latest):
+        print("Using checkpoint/latest.pt")
+        latest_obj = torch.load(latest, map_location="cpu", weights_only=False)
+        if isinstance(latest_obj, dict) and "model_state_dict" in latest_obj:
+            return latest
+        raise TypeError(
+            f"{latest} does not contain a model_state_dict entry; "
+            "expected a training checkpoint saved by main_train.py."
+        )
 
     raise FileNotFoundError(
         f"No model checkpoint found in {model_path!r}.\n"
         f"Expected one of:\n"
         f"  {os.path.join(model_path, 'checkpoint_all_dev', 'best.pt')}\n"
-        f"  {top3_json} (with valid paths)\n"
-        f"  {legacy}"
+        f"  {latest}"
     )
 
 
@@ -353,7 +339,9 @@ if __name__ == "__main__":
     args = _init_args()
 
     ckpt_path  = _find_model_checkpoint(args.model_path)
-    checkpoint = torch.load(ckpt_path, map_location=args.device)
+    checkpoint = torch.load(ckpt_path, map_location=args.device, weights_only=False)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        checkpoint = checkpoint["model_state_dict"]
 
     print("Model:", args.model)
     model = build_model_for_inference(args)
