@@ -45,14 +45,12 @@ Please download the AT-ADD dataset and organize it as follows:
 >> conda activate atadd_t1_3.10
 >> python -m pip uninstall -y torch torchvision torchaudio triton
 >> python -m pip uninstall -y nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12 nvidia-nccl-cu12 nvidia-nvjitlink-cu12 nvidia-nvtx-cu12
->> python -m pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu130
->> pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121
->> pip install -r requirements.txt
-
 pip install timm==1.0.3
 git clone https://github.com/Adamdad/rational_kat_cu.git
 cd rational_kat_cu
-pip install -e .
+pip install -e . --no-build-isolation 
+cd /root/workspace/ThreeTO_track1/
+pip install -r requirements.txt --no-build-isolation
 ```
 
 ---

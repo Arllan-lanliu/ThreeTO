@@ -17,7 +17,6 @@ ssl:
 train_task: atadd-track1
 out_fold: ./ckpt_t1_trunk_vote/xlsr_3_11_24_multicrop
 model: ft-w2v2aasist
-fusion: # cat_linear
 filter_types: speech
 assist_project_choice: 2
 
