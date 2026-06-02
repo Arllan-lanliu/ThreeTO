@@ -1,3 +1,5 @@
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
 gpu=0
 config=cqcc_ssl/conf/base.yaml
 model_path=""            # Leave empty to derive from config out_fold.
