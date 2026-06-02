@@ -63,7 +63,6 @@ def initParams():
         os.makedirs(args.log_dir)
         os.makedirs(ckpt_dir)
         os.makedirs(os.path.join(args.out_fold, "checkpoint_all_dev"))
-        os.makedirs(os.path.join(args.out_fold, "checkpoint_steps"))
 
         # Save full config as YAML (used for --resume and reproducibility)
         if cfg is not None:
@@ -153,9 +152,6 @@ def train(args):
 
     n_batches     = len(train_loader)
     stop_training = False
-    last_completed_step = int(resume.get("global_step", 0) or 0)
-    checkpoint_steps_dir = os.path.join(args.out_fold, "checkpoint_steps")
-    os.makedirs(checkpoint_steps_dir, exist_ok=True)
 
     # ── Shared inference helper ───────────────────────────────────────────────
 
@@ -280,11 +276,6 @@ def train(args):
             os.path.join(args.out_fold, "checkpoint", "latest.pt"),
         )
 
-    def _save_step_checkpoint(global_step):
-        path = os.path.join(checkpoint_steps_dir, f"step_{global_step}.pt")
-        torch.save(model.state_dict(), path)
-        print(f"  → Saved step checkpoint: {path}")
-
     # ── Sample-dev evaluation (every eval_steps steps) ───────────────────────
 
     def do_sample_eval(epoch, global_step):
@@ -359,9 +350,7 @@ def train(args):
         """Evaluate on the complete dev set.
 
         - Logs to ``all_dev_loss.log``.
-        - Saves independent best checkpoints for full-dev loss, EER, and F1.
-        - Keeps ``checkpoint_all_dev/best.pt`` as a compatibility alias for
-          the metric selected by ``save_best_by``.
+        - Saves ``checkpoint_all_dev/best.pt`` when ``save_best_by`` improves.
         - Does NOT affect early stopping.
         """
         nonlocal best_full_val, best_full_vals
@@ -398,42 +387,30 @@ def train(args):
         print(f"  [generator] {gen_f1}")
 
         metric_values = {"loss": val_loss, "eer": val_eer, "f1": val_f1}
-        for metric_name, cur_val in metric_values.items():
-            if not _is_metric_better(metric_name, cur_val, best_full_vals[metric_name]):
-                continue
-
-            best_full_vals[metric_name] = cur_val
-            best_path = os.path.join(
-                args.out_fold, "checkpoint_all_dev", f"best_{metric_name}.pt"
-            )
+        tracked = args.save_best_by
+        cur_val = metric_values[tracked]
+        if _is_metric_better(tracked, cur_val, best_full_vals[tracked]):
+            best_full_vals[tracked] = cur_val
+            best_full_val = cur_val
+            best_path = os.path.join(args.out_fold, "checkpoint_all_dev", "best.pt")
             torch.save(model.state_dict(), best_path)
             meta = {
                 "f1": val_f1,
                 "eer": val_eer,
                 "loss": val_loss,
                 "step": global_step,
-                "metric": metric_name,
+                "metric": tracked,
                 "metric_val": cur_val,
                 "decision_threshold": decision_thr,
                 "type_metrics": _jsonable_metrics(type_metrics),
                 "generator_metrics": _jsonable_metrics(generator_metrics),
             }
             with open(
-                os.path.join(
-                    args.out_fold, "checkpoint_all_dev", f"best_{metric_name}_meta.json"
-                ),
+                os.path.join(args.out_fold, "checkpoint_all_dev", "best_meta.json"),
                 "w",
             ) as mf:
                 json.dump(meta, mf, indent=2)
-            print(f"  → All-dev best_{metric_name} updated ({metric_name}={cur_val:.4f})")
-
-            if metric_name == args.save_best_by:
-                best_full_val = cur_val
-                legacy_path = os.path.join(args.out_fold, "checkpoint_all_dev", "best.pt")
-                legacy_meta = os.path.join(args.out_fold, "checkpoint_all_dev", "best_meta.json")
-                torch.save(model.state_dict(), legacy_path)
-                with open(legacy_meta, "w") as mf:
-                    json.dump(meta, mf, indent=2)
+            print(f"  → All-dev best ({tracked}={cur_val:.4f}) updated")
 
         _save_latest(epoch, global_step)
 
@@ -493,7 +470,6 @@ def train(args):
             train_losses.append(loss.item())
             global_step = epoch * n_batches + i
             gs = global_step + 1   # 1-indexed
-            last_completed_step = gs
 
             with open(os.path.join(args.log_dir, "train_loss.log"), "a") as f:
                 f.write(f"{gs}\t{epoch}\t{i}\t{train_losses[-1]:.6f}\n")
@@ -503,9 +479,6 @@ def train(args):
                      "train/epoch": epoch, "train/lr": current_lr},
                     step=gs,
                 )
-
-            if gs % 10000 == 0:
-                _save_step_checkpoint(gs)
 
             # Sample-dev eval every eval_steps steps
             if args.eval_steps > 0 and gs % args.eval_steps == 0:
@@ -542,9 +515,6 @@ def train(args):
             print(f"[Warmup] skip epoch-end eval at step {gs_end}")
         elif do_sample_eval(epoch, gs_end):
             break
-
-    if last_completed_step > 0 and last_completed_step % 10000 != 0:
-        _save_step_checkpoint(last_completed_step)
 
     if use_wandb:
         wandb.finish()

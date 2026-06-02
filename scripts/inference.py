@@ -308,14 +308,14 @@ def _find_model_checkpoint(model_path: str) -> str:
     """Locate the best model checkpoint in *model_path*.
 
     Priority:
-    1. ``checkpoint_all_dev/best.pt``  — best F1 on the full dev set
-    2. ``checkpoint_sample_dev/top3.json`` → highest-F1 entry
+    1. ``checkpoint_all_dev/best.pt``  — full-dev best for ``save_best_by``
+    2. ``checkpoint_sample_dev/top3.json`` → legacy fallback
     3. Legacy ``atadd_model.pt`` at the root (backward compatibility)
     """
     # 1. Full-dev best
     all_dev_best = os.path.join(model_path, "checkpoint_all_dev", "best.pt")
     if os.path.exists(all_dev_best):
-        print(f"Using checkpoint_all_dev/best.pt  (best F1 on full dev set)")
+        print(f"Using checkpoint_all_dev/best.pt")
         return all_dev_best
 
     # 2. Sample-dev top-3 — pick the best entry (first entry is best after sorting)
