@@ -1,17 +1,27 @@
-seed: 1234
-gpu: '1'
 train_task: atadd-track1
+lora:
+  use_lora: true
+  lora_r: 8
+  lora_alpha: 16
+  lora_targets:
+  - q_proj
+  - v_proj
+  # - q_proj
+  # - k_proj
+  # - v_proj
+  # - out_proj
+  lora_dropout: 0.1
+  lr: 1.0e-04   #lora_lr    default 1.0e-6
+  head_lr: 1.0e-05
+num_epochs: 20
+batch_size: 24
+out_fold: ./ckpt_t1_lora_xlsr/q_v_proj_lrlora_1e-4_lrhead_1e-5
 
-out_fold: ./ckpt_t1_trunk_vote/crop_v2
 model: ft-w2v2aasist
 fusion: cat_linear
 audio_len: 64600
 filter_types: speech
-type_loss_weight: 0.1
 assist_project_choice: 2
-num_epochs: 100
-batch_size: 24
-lr: 1.0e-06
 lr_decay: 0.5
 interval: 2
 beta_1: 0.9

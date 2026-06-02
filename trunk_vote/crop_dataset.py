@@ -102,6 +102,7 @@ class MultiCropTrainDataset(Dataset):
         rir_path="",
         dev_subsample=False,
         dev_subsample_seed=42,
+        random_one_crop=True,
     ):
         super().__init__()
         self.path_to_audio = path_to_audio
@@ -114,6 +115,7 @@ class MultiCropTrainDataset(Dataset):
         self.AudioAugmentor = AudioAugmentor()
         self.dev_subsample = bool(dev_subsample)
         self.dev_subsample_seed = int(dev_subsample_seed)
+        self.random_one_crop = bool(random_one_crop)
         self.speech_aug_method = str(speech_aug_method).strip().lower()
         self.speech_rawboost_algo = int(speech_rawboost_algo)
         self._musan_aug = None
@@ -189,12 +191,16 @@ class MultiCropTrainDataset(Dataset):
 
         self.audio_files = rows
         self.all_files = []
-        for filename, cls, label, generator in rows:
-            path = os.path.join(self.path_to_audio, filename)
-            n = _audio_num_samples(path)
-            starts = crop_starts(n, self.audio_length)
-            for crop_idx, start in enumerate(starts):
-                self.all_files.append((filename, cls, label, generator, crop_idx, start))
+        if self.random_one_crop:
+            for filename, cls, label, generator in rows:
+                self.all_files.append((filename, cls, label, generator, -1, None))
+        else:
+            for filename, cls, label, generator in rows:
+                path = os.path.join(self.path_to_audio, filename)
+                n = _audio_num_samples(path)
+                starts = crop_starts(n, self.audio_length)
+                for crop_idx, start in enumerate(starts):
+                    self.all_files.append((filename, cls, label, generator, crop_idx, start))
 
         self._print_stats()
 
@@ -206,6 +212,13 @@ class MultiCropTrainDataset(Dataset):
         filepath = os.path.join(self.path_to_audio, filename)
         waveform, sr = torchaudio_load(filepath)
 
+        if self.random_one_crop:
+            starts = crop_starts(int(waveform.shape[-1]), self.audio_length)
+            start = random.choice(starts)
+
+        waveform = crop_and_repeat_pad(waveform, start, self.audio_length)
+
+        did_augment = False
         if self.aug_probs is not None:
             aug_prob = self.aug_probs.get(class_type, 0.0)
             if aug_prob > 0.0 and random.random() < aug_prob:
@@ -216,8 +229,10 @@ class MultiCropTrainDataset(Dataset):
                     waveform = self._augment_music(wav_np)
                 else:
                     waveform = process_Rawboost_feature(wav_np, sr=sr, algo=5)
+                did_augment = True
 
-        waveform = crop_and_repeat_pad(waveform, start, self.audio_length)
+        if did_augment:
+            waveform = crop_and_repeat_pad(waveform, 0, self.audio_length)
 
         if self.musanrir:
             audio_length = waveform.size(0)
@@ -301,7 +316,11 @@ class MultiCropTrainDataset(Dataset):
         return sampled
 
     def _print_stats(self):
-        role = "Dev  " if self.dev_subsample else "Train"
+        role = (
+            "Train(random crop)"
+            if self.random_one_crop
+            else ("Dev  " if self.dev_subsample else "Train")
+        )
         sep = "=" * 68
         type_counts = Counter(item[1] for item in self.audio_files)
         crop_counts = Counter(item[1] for item in self.all_files)
@@ -392,6 +411,7 @@ def build_multicrop_dataloaders(args):
         train_ds = MultiCropTrainDataset(
             args.atadd_t1_train_audio,
             args.atadd_t1_train_label,
+            random_one_crop=True,
             **_train_kwargs(args),
         )
         val_ds = MultiCropTrainDataset(
@@ -405,6 +425,7 @@ def build_multicrop_dataloaders(args):
         train_ds = MultiCropTrainDataset(
             args.atadd_t2_train_audio,
             args.atadd_t2_train_label,
+            random_one_crop=True,
             **_train_kwargs(args),
         )
         val_ds = MultiCropTrainDataset(
