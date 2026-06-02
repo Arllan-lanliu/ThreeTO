@@ -4,13 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from model.beats.BEATs import BEATsModel
 from model.layer_fusion import (
     IntermediateLayerFusion,
     normalize_layer_fusion,
     validate_layer_fusion_config,
 )
-import torchaudio
 from transformers import ClapModel, ClapProcessor
 from transformers import (
     Wav2Vec2Config, Wav2Vec2FeatureExtractor, Wav2Vec2Model,
@@ -589,6 +587,8 @@ class BEATs(nn.Module):
     ):
         super(BEATs, self).__init__()
 
+        from model.beats.BEATs import BEATsModel
+
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.sampling_rate = sampling_rate
         self.freeze = freeze
@@ -665,6 +665,8 @@ class BEATs_init(nn.Module):
     def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True):
         super(BEATs, self).__init__()
 
+        from model.beats.BEATs import BEATsModel
+
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.sampling_rate = sampling_rate
         self.freeze = freeze
@@ -701,7 +703,9 @@ class CLAP(nn.Module):
         )
         self.sampling_rate = sampling_rate
         self.return_hidden_states = return_hidden_states
-    
+
+        import torchaudio
+
         self.resampler = torchaudio.transforms.Resample(
             orig_freq=sampling_rate,
             new_freq=48000

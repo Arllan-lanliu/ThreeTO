@@ -16,6 +16,9 @@ wandb_run_name=""
 if [[ -z "${model_path}" && -n "${config}" ]]; then
     model_path=$(python3 -c "
 import yaml
+
+
+
 with open('${config}') as f:
     cfg = yaml.safe_load(f)
 print(cfg.get('out_fold', './ckpt_t1_cqcc_ssl/cross_attn'))

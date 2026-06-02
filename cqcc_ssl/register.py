@@ -20,13 +20,15 @@ def _xlsr_kw(args) -> dict:
 
 def _cqcc_kw(args) -> dict:
     return {
-        "cqcc_dim": int(getattr(args, "cqcc_dim", 30)),
-        "cqcc_hop_length": int(getattr(args, "cqcc_hop_length", 320)),
-        "cqcc_n_bins": int(getattr(args, "cqcc_n_bins", 84)),
-        "cqcc_bins_per_octave": int(getattr(args, "cqcc_bins_per_octave", 12)),
+        "cqcc_n_coeffs": int(getattr(args, "cqcc_n_coeffs", 20)),
+        "cqcc_hop_length": int(getattr(args, "cqcc_hop_length", 160)),
+        "cqcc_n_bins": int(getattr(args, "cqcc_n_bins", 672)),
+        "cqcc_bins_per_octave": int(getattr(args, "cqcc_bins_per_octave", 96)),
         "cqcc_fmin": float(getattr(args, "cqcc_fmin", 15.625)),
         "fusion_heads": int(getattr(args, "cqcc_ssl_fusion_heads", 8)),
         "fusion_dropout": float(getattr(args, "cqcc_ssl_fusion_dropout", 0.1)),
+        "fusion_dim": int(getattr(args, "cqcc_ssl_fusion_dim", 1024)),
+        "align_cqcc_to_ssl": bool(getattr(args, "cqcc_ssl_align_cqcc_to_ssl", False)),
     }
 
 

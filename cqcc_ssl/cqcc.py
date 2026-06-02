@@ -13,17 +13,19 @@ import torch.nn as nn
 
 
 class CQCCExtractor(nn.Module):
-    """Batch CQCC extractor based on CQT magnitude + log compression + DCT."""
+    """Batch CQCC extractor: pre-emphasis, CQT, log-power, DCT, delta features."""
 
     def __init__(
         self,
         sample_rate: int = 16000,
-        hop_length: int = 320,
-        n_bins: int = 84,
-        bins_per_octave: int = 12,
-        n_coeffs: int = 30,
+        hop_length: int = 160,
+        n_bins: int = 672,
+        bins_per_octave: int = 96,
+        n_coeffs: int = 20,
         fmin: float = 15.625,
         eps: float = 1e-10,
+        pre_emphasis: float = 0.97,
+        use_deltas: bool = True,
     ):
         super().__init__()
         self.sample_rate = int(sample_rate)
@@ -33,10 +35,12 @@ class CQCCExtractor(nn.Module):
         self.n_coeffs = int(n_coeffs)
         self.fmin = float(fmin)
         self.eps = float(eps)
-        self.out_dim = self.n_coeffs
+        self.pre_emphasis = float(pre_emphasis)
+        self.use_deltas = bool(use_deltas)
+        self.out_dim = self.n_coeffs * 3 if self.use_deltas else self.n_coeffs
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        """Return CQCCs as ``(B, T, n_coeffs)`` on ``audio.device``."""
+        """Return CQCCs as ``(B, T, out_dim)`` on ``audio.device``."""
         if audio.dim() == 1:
             audio = audio.unsqueeze(0)
         device = audio.device
@@ -45,7 +49,7 @@ class CQCCExtractor(nn.Module):
 
         feats = [self._extract_one(wav) for wav in wavs]
         max_t = max(feat.shape[0] for feat in feats)
-        padded = np.zeros((len(feats), max_t, self.n_coeffs), dtype=np.float32)
+        padded = np.zeros((len(feats), max_t, self.out_dim), dtype=np.float32)
         for i, feat in enumerate(feats):
             padded[i, : feat.shape[0], :] = feat
         return torch.as_tensor(padded, device=device, dtype=dtype)
@@ -55,6 +59,10 @@ class CQCCExtractor(nn.Module):
         from scipy.fftpack import dct
 
         wav = np.asarray(wav, dtype=np.float32)
+
+        # pre-emphasis
+        wav = np.append(wav[0], wav[1:] - self.pre_emphasis * wav[:-1])
+
         cqt = librosa.cqt(
             wav,
             sr=self.sample_rate,
@@ -68,7 +76,14 @@ class CQCCExtractor(nn.Module):
         coeff = dct(log_power, type=2, axis=0, norm="ortho")[: self.n_coeffs]
         coeff = coeff.T.astype(np.float32, copy=False)
 
-        mean = coeff.mean(axis=0, keepdims=True)
-        std = coeff.std(axis=0, keepdims=True)
-        return (coeff - mean) / (std + 1e-5)
+        if self.use_deltas:
+            delta = librosa.feature.delta(coeff, order=1, axis=0)
+            delta2 = librosa.feature.delta(coeff, order=2, axis=0)
+            feat = np.concatenate([coeff, delta, delta2], axis=1)
+        else:
+            feat = coeff
+
+        mean = feat.mean(axis=0, keepdims=True)
+        std = feat.std(axis=0, keepdims=True)
+        return (feat - mean) / (std + 1e-5)
 
