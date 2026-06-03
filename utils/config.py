@@ -333,6 +333,19 @@ class ATADDConfig:
     assist_project_choice: int = 0
     """AASIST input projector: ``0`` Linear (default), ``1`` MLP, ``2`` GRKAN."""
 
+    cqcc_backend: str = "librosa"
+    """CQCC frontend: ``librosa`` preserves the original CPU CQT path; ``torch`` uses a GPU-friendly log-frequency STFT approximation."""
+    cqcc_torch_n_fft: int = 2048
+    cqcc_n_coeffs: int = 20
+    cqcc_hop_length: int = 160
+    cqcc_n_bins: int = 672
+    cqcc_bins_per_octave: int = 96
+    cqcc_fmin: float = 15.625
+    cqcc_ssl_fusion_heads: int = 8
+    cqcc_ssl_fusion_dropout: float = 0.1
+    cqcc_ssl_fusion_dim: int = 1024
+    cqcc_ssl_align_cqcc_to_ssl: bool = False
+
     # ── Training hyperparameters ─────────────────────────────────────────────
     num_epochs:        int   = 20
     batch_size:        int   = 24
@@ -390,11 +403,23 @@ class ATADDConfig:
                 "assist_project_choice must be 0, 1, or 2, "
                 f"got {self.assist_project_choice!r}"
             )
+        backend = self.cqcc_backend.strip().lower()
+        _validate_choice(backend, ("librosa", "torch"), "cqcc_backend")
+        object.__setattr__(self, "cqcc_backend", backend)
 
         _validate_positive(self.audio_len,  "audio_len")
+        _validate_positive(self.cqcc_torch_n_fft, "cqcc_torch_n_fft")
+        _validate_positive(self.cqcc_n_coeffs, "cqcc_n_coeffs")
+        _validate_positive(self.cqcc_hop_length, "cqcc_hop_length")
+        _validate_positive(self.cqcc_n_bins, "cqcc_n_bins")
+        _validate_positive(self.cqcc_bins_per_octave, "cqcc_bins_per_octave")
+        _validate_positive(self.cqcc_fmin, "cqcc_fmin")
+        _validate_positive(self.cqcc_ssl_fusion_heads, "cqcc_ssl_fusion_heads")
+        _validate_positive(self.cqcc_ssl_fusion_dim, "cqcc_ssl_fusion_dim")
         _validate_positive(self.num_epochs, "num_epochs")
         _validate_positive(self.batch_size, "batch_size")
         _validate_positive(self.num_workers, "num_workers")
+        _validate_range(self.cqcc_ssl_fusion_dropout, 0.0, 1.0, "cqcc_ssl_fusion_dropout")
         _validate_range(self.lr,            1e-9, 1.0,  "lr")
         _validate_range(self.lr_decay,      0.0,  1.0,  "lr_decay")
         _validate_range(self.beta_1,        0.0,  1.0,  "beta_1")

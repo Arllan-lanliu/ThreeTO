@@ -78,6 +78,8 @@ class CQCCXLSRAASIST(nn.Module):
         cqcc_n_bins: int = 672,
         cqcc_bins_per_octave: int = 96,
         cqcc_fmin: float = 15.625,
+        cqcc_backend: str = "librosa",
+        cqcc_torch_n_fft: int = 2048,
         fusion_heads: int = 8,
         fusion_dropout: float = 0.1,
         fusion_dim: int = 128,
@@ -97,6 +99,8 @@ class CQCCXLSRAASIST(nn.Module):
             bins_per_octave=cqcc_bins_per_octave,
             n_coeffs=cqcc_n_coeffs,
             fmin=cqcc_fmin,
+            backend=cqcc_backend,
+            torch_n_fft=cqcc_torch_n_fft,
         )
         self.fusion_dim = int(fusion_dim)
         self.align_cqcc_to_ssl = bool(align_cqcc_to_ssl)

@@ -15,6 +15,8 @@ out_fold: /root/autodl-fs/ckpt_t1/cqcc_ssl/cross_attn_assproj0
 model: ft-cqccxlsraasist
 save_best_by: loss
 assist_project_choice: 0
+cqcc_backend: torch
+cqcc_torch_n_fft: 2048
 
 aug:
   aug_speech: 0.2
@@ -31,4 +33,3 @@ eval_steps:        500
 full_eval_steps:   3000
 eval_warmup_steps: 3000
 patience:          10
-

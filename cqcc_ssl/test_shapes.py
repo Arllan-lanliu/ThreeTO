@@ -62,6 +62,17 @@ def test_cqcc_extractor_defaults():
     assert ext.out_dim == 60
 
 
+def test_torch_cqcc_extractor_shape():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ext = CQCCExtractor(backend="torch", n_bins=96, torch_n_fft=512).to(device)
+    audio = torch.randn(2, 16000, device=device)
+    feat = ext(audio)
+    assert feat.device == audio.device
+    assert feat.shape[0] == 2
+    assert feat.shape[2] == 60
+    assert feat.shape[1] > 0
+
+
 def test_align_cqcc_time():
     device = torch.device("cpu")
     model = _build_model(fusion_dim=1024, align_cqcc_to_ssl=False, device=device)

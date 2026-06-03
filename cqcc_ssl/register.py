@@ -25,6 +25,8 @@ def _cqcc_kw(args) -> dict:
         "cqcc_n_bins": int(getattr(args, "cqcc_n_bins", 672)),
         "cqcc_bins_per_octave": int(getattr(args, "cqcc_bins_per_octave", 96)),
         "cqcc_fmin": float(getattr(args, "cqcc_fmin", 15.625)),
+        "cqcc_backend": str(getattr(args, "cqcc_backend", "librosa")),
+        "cqcc_torch_n_fft": int(getattr(args, "cqcc_torch_n_fft", 2048)),
         "fusion_heads": int(getattr(args, "cqcc_ssl_fusion_heads", 8)),
         "fusion_dropout": float(getattr(args, "cqcc_ssl_fusion_dropout", 0.1)),
         "fusion_dim": int(getattr(args, "cqcc_ssl_fusion_dim", 1024)),
@@ -54,4 +56,3 @@ def _build_fr_cqcc_xlsr_aasist(args):
         **_xlsr_kw(args),
         **_cqcc_kw(args),
     )
-
