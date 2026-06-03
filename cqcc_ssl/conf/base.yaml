@@ -21,14 +21,14 @@ aug:
   speech_aug_method: codec
 
 num_epochs:  100
-batch_size:  24
+batch_size:  48
 lr:          0.000001
 lr_decay:    0.5
 interval:    2
 num_workers: 4
 
-eval_steps:        1000
-full_eval_steps:   6000
-eval_warmup_steps: 6000
-patience:          20
+eval_steps:        500
+full_eval_steps:   3000
+eval_warmup_steps: 3000
+patience:          10
 

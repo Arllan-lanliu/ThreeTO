@@ -182,7 +182,7 @@ class atadd_dataset(Dataset):
             reader = csv.DictReader(f)
             for row in reader:
                 filename = row["name"].strip()
-                class_type = row["type"].strip()
+                class_type = "speech" #row["type"].strip()
                 label = row["label"].strip()
                 generator = row["generator"].strip()
                 if self.filter_types is not None and class_type.lower() not in self.filter_types:
