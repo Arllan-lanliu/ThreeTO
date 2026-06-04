@@ -6,7 +6,7 @@ model_path=""            # Leave empty to derive from config out_fold.
 RESUME=0                 # 1 = resume from checkpoint
 RUN_TRAIN=1              # 1 = train
 RUN_SCORE=1              # 1 = generate eval scores
-RUN_DEV_ANALYZE=0        # Reserved for parity with root run.sh
+RUN_DEV_ANALYZE=1        # Reserved for parity with root run.sh
 
 wandb_mode=offline
 wandb_project="AT-ADD-CQCC-SSL"
