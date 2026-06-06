@@ -13,13 +13,16 @@ import torch.nn.functional as F
 from sklearn.manifold import TSNE
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
 # Allow running as a top-level script from the project root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.model import build_model
 from data.dataset import atadd_eval_dataset
 
+try:
+    import cqcc_ssl.register  # noqa: F401 - register CQCC SSL models into root registry
+except ImportError:
+    pass
 
 VALID_TYPES = ("speech", "sound", "music", "singing")
 VALID_LABELS = ("real", "fake")
@@ -142,7 +145,10 @@ def load_label_meta(label_path):
         reader = csv.DictReader(f)
         for row in reader:
             name = row["name"].strip()
-            t = row["type"].strip().lower()
+            if "type" in row and row["type"] is not None:
+                t = row["type"].strip().lower()
+            else:
+                t = "speech"
             y = row["label"].strip().lower()
             if t in VALID_TYPES and y in VALID_LABELS:
                 meta[name] = (t, y)

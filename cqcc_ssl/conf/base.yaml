@@ -6,12 +6,12 @@ data:
   atadd_t1_eval_audio: /root/autodl-fs/track1/eval
 ssl:
   xlsr: /root/autodl-fs/models/wav2vec2-xls-r-300m
-  xlsr_selected_layers: [3, 11, 24]
-  xlsr_layer_fusion: cat_proj_v1
+  xlsr_selected_layers: [24]
+  xlsr_layer_fusion: last
 
 filter_types: speech
 train_task: atadd-track1
-out_fold: /root/autodl-fs/ckpt_t1/cqcc_ssl/cross_attn_assproj0
+out_fold: /root/autodl-fs/ckpt_t1/cqcc_ssl/cross_attn_assproj0_aug0.2_rawboost8_xlsr24_last
 model: ft-cqccxlsraasist
 save_best_by: loss
 assist_project_choice: 0
@@ -20,7 +20,8 @@ cqcc_torch_n_fft: 2048
 
 aug:
   aug_speech: 0.2
-  speech_aug_method: codec
+  speech_aug_method: rawboost
+  speech_rawboost_algo: 8
 
 num_epochs:  100
 batch_size:  48

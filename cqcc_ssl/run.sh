@@ -68,6 +68,15 @@ if [[ "${RUN_SCORE}" == "1" ]]; then
         --threshold  0.5
 fi
 
+
 if [[ "${RUN_DEV_ANALYZE}" == "1" ]]; then
-    echo "[warn] cqcc_ssl/run.sh keeps RUN_DEV_ANALYZE for parity; use root scripts/analyze.py only after registering this model."
+    echo ""
+    echo ">>> [Stage 3] Dev-set analysis"
+    PYTHONWARNINGS="ignore" \
+    python scripts/analyze.py \
+        --model_path "${model_path}" \
+        --gpu        "${gpu}" \
+        --batch_size 160 \
+        --eval_task  atadd-track1 \
+        --metrics_only   # remove this flag to also generate attention heatmaps + t-SNE
 fi
