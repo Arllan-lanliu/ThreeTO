@@ -7,6 +7,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 config="multi_head_trunk/conf/xlsr_3_11_24_multi_head.yaml"
 
 RUN_TRAIN=1
+RUN_DEV_ANALYZE=1
 RUN_SCORE=1
 
 wandb_mode=offline
@@ -35,6 +36,16 @@ if [[ "${RUN_TRAIN}" == "1" ]]; then
       --config "${config}" \
       --gpu "${gpu}" \
       "${WB_ARGS[@]}"
+fi
+
+if [[ "${RUN_DEV_ANALYZE}" == "1" ]]; then
+  PYTHONWARNINGS="ignore" \
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/analyze.py" \
+      --model_path "${model_path}" \
+      --gpu "${gpu}" \
+      --batch_size 160 \
+      --eval_task atadd-track1 \
+      --metrics_only
 fi
 
 if [[ "${RUN_SCORE}" == "1" ]]; then
