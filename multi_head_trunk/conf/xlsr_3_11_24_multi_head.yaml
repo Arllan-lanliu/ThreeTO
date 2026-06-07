@@ -1,0 +1,57 @@
+data:
+  atadd_t1_train_audio: /root/autodl-fs/track1/train
+  atadd_t1_train_label: /root/autodl-fs/track1/label/train.csv
+  atadd_t1_dev_audio: /root/autodl-fs/track1/dev
+  atadd_t1_dev_label: /root/autodl-fs/track1/label/dev.csv
+  atadd_t1_eval_audio: /root/autodl-fs/track1/eval
+ssl:
+  xlsr: /root/autodl-fs/models/wav2vec2-xls-r-300m
+  selected_layers:
+  - 3
+  - 11
+  - 24
+  layer_fusion: cat_proj_v1
+
+train_task: atadd-track1
+out_fold: /root/autodl-fs/ckpt_t1/xlsr_3_11_24_multi_head
+model: multi-head-xlsr-aasist
+filter_types: speech
+assist_project_choice: 0
+
+aug:
+  aug_speech: 0.2
+  aug_sound: 0.0
+  aug_singing: 0.0
+  aug_music: 0.0
+  speech_aug_method: rawboost
+  speech_rawboost_algo: 5
+
+multi_head:
+  special_weight: 0.2
+  special_loss_weight: 0.1
+  min_special_frames: 32
+  special_head_ranges:
+  - name: front
+    start: 0.0
+    end: 0.5
+  - name: middle
+    start: 0.4
+    end: 0.9
+  - name: tail
+    start: 0.8
+    end: 1.0
+
+lr:             1.0e-06
+lr_decay:       0.5
+interval:       2
+num_workers:    4
+save_best_by:   loss
+eval_threshold_mode: fixed
+score_threshold: 0.5
+
+num_epochs:         100
+batch_size:         48
+eval_steps:         500
+full_eval_steps:    3000
+eval_warmup_steps:  3000
+patience:           10
