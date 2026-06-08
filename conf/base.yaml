@@ -1,42 +1,30 @@
 # Speech aug: ffmpeg encode→decode round-trip (MP3 / Opus / AAC / GSM-FR).
-
 data:
-  atadd_t1_train_audio: /home/new_disk/liulan/workspace/dataset/at_add_track2/train_dev
-  atadd_t1_train_label: /home/new_disk/liulan/workspace/released_model/ADD-TRACK1/protocal/protocol_gendisjoint_v1_stage1/train_gendisjoint.csv
-  atadd_t1_dev_audio:   /home/new_disk/liulan/workspace/dataset/at_add_track2/train_dev
-  atadd_t1_dev_label:   /home/new_disk/liulan/workspace/released_model/ADD-TRACK1/protocal/protocol_gendisjoint_v1_stage1/val_gendisjoint.csv
-  atadd_t1_eval_audio:  /home/new_disk/liulan/workspace/dataset/at_add_track1/eval_t1
-
-# ── SSL model paths ───────────────────────────────────────────────────────────
+  atadd_t1_train_audio: /root/autodl-fs/track1/train
+  atadd_t1_train_label: /root/autodl-fs/track1/label/train.csv
+  atadd_t1_dev_audio: /root/autodl-fs/track1/dev
+  atadd_t1_dev_label: /root/autodl-fs/track1/label/dev.csv
+  atadd_t1_eval_audio: /root/autodl-fs/track1/eval
 ssl:
-  xlsr:  /home/new_disk/liulan/workspace/otherfiles/huggingface/wav2vec2-xls-r-300m
-  wavlm: /home/new_disk/liulan/workspace/otherfiles/huggingface/wavlm-large
-  mert:  /home/new_disk/liulan/workspace/otherfiles/huggingface/MERT-v1-330M
-  beats: /home/new_disk/liulan/workspace/otherfiles/huggingface/BEATs_iter3
-  clap:  /home/new_disk/liulan/workspace/otherfiles/huggingface/larger_clap_music_and_speech
+  xlsr: /root/autodl-fs/models/wav2vec2-xls-r-300m
 
   # last | cat_linear | cat_proj_v1 | cat_proj_v2 | mean | weight_sum | mhfa_fuse | mhfa_pool
   # XLSR multi-layer readout (ignored by non-XLSR frontends):
   xlsr_selected_layers: [3, 11, 24]
   xlsr_layer_fusion: cat_proj_v1
-  # WavLM multi-layer readout (ignored by non-WavLM frontends):
-  # wavlm_selected_layers: [5, 8, 11 ]
-  # wavlm_layer_fusion: cat_proj_v1
-  # BEATs multi-layer readout (ignored by non-BEATs frontends):
-  # beats_selected_layers: [3, 6, 9]
-  # beats_layer_fusion: mhfa_fuse
 
 
 filter_types: speech
 train_task: atadd-track1
-out_fold: ./ckpt_t1_ssl_layer/baseline
+out_fold: /root/autodl-fs/ckpt_t1/train_dev_threshold0.8
 model: ft-w2v2aasist              # ft-w2v2aasist   ft-wavlmaasist   ft-beatsaasist
 save_best_by: loss
 assist_project_choice: 0
 
 aug:
   aug_speech: 0.2
-  speech_aug_method: codec
+  speech_aug_method: rawboost
+  speech_rawboost_algo: 5
 
 num_epochs:  100
 batch_size:  24

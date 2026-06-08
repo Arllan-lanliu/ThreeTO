@@ -22,11 +22,7 @@ cqcc_torch_n_fft: 2048
 aug:
   aug_speech: 0.2
   speech_aug_method: rawboost
-<<<<<<< HEAD
-  speech_rawboost_algo: 8
-=======
   speech_rawboost_algo: 5
->>>>>>> aa01ee1 (update)
 
 num_epochs:  100
 batch_size:  48
