@@ -344,7 +344,7 @@ class ATADDConfig:
     cqcc_ssl_fusion_heads: int = 8
     cqcc_ssl_fusion_dropout: float = 0.1
     cqcc_ssl_fusion_dim: int = 1024
-    cqcc_ssl_align_cqcc_to_ssl: bool = False
+    cqcc_ssl_align_cqcc_to_ssl: bool = True
 
     # ── Training hyperparameters ─────────────────────────────────────────────
     num_epochs:        int   = 20

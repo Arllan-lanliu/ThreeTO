@@ -417,7 +417,7 @@ class atadd_dataset(Dataset):
 
 
 class atadd_eval_dataset(Dataset):
-    def __init__(self, path_to_audio, audio_length=64600, exts=(".flac", ".wav")):
+    def __init__(self, path_to_audio, audio_length=64600, exts=(".flac", ".wav"), aug=False):
         super(atadd_eval_dataset, self).__init__()
 
         self.path_to_audio = path_to_audio
@@ -428,6 +428,12 @@ class atadd_eval_dataset(Dataset):
             if f.lower().endswith(exts)
         ])
 
+        if aug:
+            print("[atadd_eval_dataset] eval augmentation enabled: codec round-trip")
+            self._speech_codec_aug = SpeechCodecRoundtripAugment(sr=16000)
+        else:
+            self._speech_codec_aug = None
+
     def __len__(self):
         return len(self.all_files)
 
@@ -436,6 +442,11 @@ class atadd_eval_dataset(Dataset):
         filepath = os.path.join(self.path_to_audio, filename)
 
         waveform, sr = torchaudio_load(filepath)
+
+        if self._speech_codec_aug is not None:
+            out = self._speech_codec_aug.apply(waveform)
+            waveform = torch.tensor(out, dtype=torch.float32)
+
         waveform = pad_dataset(waveform, self.audio_length)
 
         return waveform, filename

@@ -17,6 +17,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.model import build_model
+import cqcc_ssl.register  # noqa: F401  register CQCC+XLSR models before building any model
 from data.dataset import atadd_eval_dataset
 
 try:
@@ -145,10 +146,11 @@ def load_label_meta(label_path):
         reader = csv.DictReader(f)
         for row in reader:
             name = row["name"].strip()
-            if "type" in row and row["type"] is not None:
-                t = row["type"].strip().lower()
-            else:
+            t = row.get("type", "speech")
+            if t is None or t.strip() == "":
                 t = "speech"
+            else:
+                t = t.strip().lower()
             y = row["label"].strip().lower()
             if t in VALID_TYPES and y in VALID_LABELS:
                 meta[name] = (t, y)
