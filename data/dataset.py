@@ -37,7 +37,7 @@ VALID_AUDIO_TYPES = frozenset({"speech", "sound", "music", "singing"})
 
 class atadd_dataset(Dataset):
     def __init__(self, path_to_audio, path_to_protocol,
-                 rawboost=False, musanrir=False, audio_length=64600,
+                 rawboost=False, musanrir=False, audio_length=64600, # 160000, 64600 default
                  filter_types=None,
                  aug_probs=None,
                  music_aug_method="spec_augment",
@@ -238,7 +238,17 @@ class atadd_dataset(Dataset):
 
     def _apply_sound_augmentation(self, wav_np, sr):
         self._ensure_audio_augmentor()
-        method = random.choice(getattr(self, "sound_aug_methods", ("rawboost",)))
+        sound_aug_methods = getattr(self, "sound_aug_methods", ("rawboost",))
+        sound_aug_weights = {
+            "rawboost": 0.8,
+            "rir_reverb": 0.1,
+            "musan_noise": 0.1,
+        }
+        method = random.choices(
+            sound_aug_methods,
+            weights=[sound_aug_weights.get(method, 1.0) for method in sound_aug_methods],
+            k=1,
+        )[0]
         if method == "rawboost":
             return process_Rawboost_feature(wav_np, sr=sr, algo=5)
 

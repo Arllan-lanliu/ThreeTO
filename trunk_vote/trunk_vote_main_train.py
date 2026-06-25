@@ -61,7 +61,7 @@ sys.path.insert(0, _rs)
 
 from utils import metrics as em
 from utils.helpers import parse_filter_types, setup_seed
-from crop_dataset import atadd_crop_dataset, atadd_eval_crop_dataset
+from crop_dataset import atadd_crop_dataset, atadd_eval_crop_dataset, atadd_random_crop_dataset
 
 from analyze_dev import add_analyze_dev_parser, run_analyze_dev
 from multi_head.multi_head import (
@@ -145,8 +145,9 @@ def load_mult_namespace(yaml_path: str) -> argparse.Namespace:
     flat.setdefault("patience", 0)
     flat.setdefault("eval_threshold_mode", "fixed")
     flat.setdefault("score_threshold", 0.5)
+    flat.setdefault("logit_pooling", "mean")
     flat.setdefault("out_fold", "./ckpt_mult_head/run")
-    flat.setdefault("eval_strategy", "oracle")
+    flat.setdefault("eval_strategy", "total")
     flat.setdefault("ssl_backbone", "xlsr")
     flat.setdefault("backbone_dim", None)
     flat.setdefault("sound_aug_methods", ["rawboost", "musan_noise", "rir_reverb"])
@@ -193,7 +194,7 @@ def _dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
     )
     aug_probs = {k: v for k, v in probs.items() if v > 0.0} or None
 
-    train_ds = atadd_crop_dataset(
+    train_ds = atadd_random_crop_dataset(
         args.atadd_t2_train_audio,
         args.atadd_t2_train_label,
         audio_length=args.audio_len,
@@ -367,8 +368,13 @@ def _aggregate_audio_logits(
     crop_names: List[str],
     crop_labels: List[int] | None = None,
     crop_types: List[int] | None = None,
+    logit_pooling: str = "mean",
 ) -> Tuple[torch.Tensor, np.ndarray | None, np.ndarray | None, List[str]]:
-    sums: Dict[str, torch.Tensor] = {}
+    pooling = logit_pooling.strip().lower()
+    if pooling not in {"mean", "min"}:
+        raise ValueError(f"Unknown logit_pooling {logit_pooling!r} (allowed: mean, min)")
+
+    grouped: Dict[str, List[torch.Tensor]] = {}
     counts: Dict[str, int] = {}
     labels: Dict[str, int] = {}
     types: Dict[str, int] = {}
@@ -379,8 +385,8 @@ def _aggregate_audio_logits(
         cpu_logits = logits.detach().float().cpu()
         for row in cpu_logits:
             name = crop_names[offset]
-            if name not in sums:
-                sums[name] = row.clone()
+            if name not in grouped:
+                grouped[name] = [row.clone()]
                 counts[name] = 1
                 order.append(name)
                 if crop_labels is not None:
@@ -388,11 +394,18 @@ def _aggregate_audio_logits(
                 if crop_types is not None:
                     types[name] = int(crop_types[offset])
             else:
-                sums[name] += row
+                grouped[name].append(row.clone())
                 counts[name] += 1
             offset += 1
 
-    avg = torch.stack([sums[n] / counts[n] for n in order], dim=0)
+    pooled_rows: List[torch.Tensor] = []
+    for name in order:
+        stack = torch.stack(grouped[name], dim=0)
+        if pooling == "mean":
+            pooled_rows.append(stack.mean(dim=0))
+        else:
+            pooled_rows.append(stack.min(dim=0).values)
+    pooled = torch.stack(pooled_rows, dim=0)
     label_np = (
         np.asarray([labels[n] for n in order], dtype=np.int64)
         if crop_labels is not None
@@ -403,7 +416,7 @@ def _aggregate_audio_logits(
         if crop_types is not None
         else None
     )
-    return avg, label_np, type_np, order
+    return pooled, label_np, type_np, order
 
 
 def _forward_scores(
@@ -430,7 +443,11 @@ def _forward_scores(
             name_l.extend(list(filenames))
 
     logits, labels_np, types_np, _names = _aggregate_audio_logits(
-        logit_l, name_l, label_l, type_l
+        logit_l,
+        name_l,
+        label_l,
+        type_l,
+        logit_pooling=getattr(args, "logit_pooling", "mean"),
     )
     scores = F.softmax(logits, dim=1)[:, 0].numpy()
     assert labels_np is not None and types_np is not None
@@ -445,37 +462,27 @@ def _mean_dev_loss(
     cw: torch.Tensor,
 ) -> float:
     model.eval()
-    spec_l: List[torch.Tensor] = []
     total_l: List[torch.Tensor] = []
     name_l: List[str] = []
     label_l: List[int] = []
-    type_l: List[int] = []
-    for feat, filenames, labels, class_types, _generator in loader:
+    for feat, filenames, labels, _class_types, _generator in loader:
         wav = feat.to(args.device)
-        ctype = class_types.long().to(args.device)
         outs = model(wav)
-        spec_l.append(_strategy_logits(outs, ctype, "oracle"))
         total_l.append(_strategy_logits(outs, None, "total"))
         name_l.extend(list(filenames))
         label_l.extend(labels.long().cpu().tolist())
-        type_l.extend(class_types.long().cpu().tolist())
 
-    spec_logits, labels_np, _types_np, _names = _aggregate_audio_logits(
-        spec_l, name_l, label_l, type_l
-    )
-    total_logits, _labels2, _types2, _names2 = _aggregate_audio_logits(
-        total_l, name_l, label_l, type_l
+    total_logits, labels_np, _types2, _names2 = _aggregate_audio_logits(
+        total_l,
+        name_l,
+        label_l,
+        logit_pooling=getattr(args, "logit_pooling", "mean"),
     )
     assert labels_np is not None
     lbl = torch.as_tensor(labels_np, dtype=torch.long, device=args.device)
-    spec_logits = spec_logits.to(args.device)
     total_logits = total_logits.to(args.device)
     ce_kw = {} if cw is None else {"weight": cw}
-    loss_specialist = F.cross_entropy(spec_logits, lbl, **ce_kw)
-    loss_total = F.cross_entropy(total_logits, lbl, **ce_kw)
-    sw = float(args.specialist_weight)
-    tw = float(args.total_weight)
-    return float(((sw * loss_specialist + tw * loss_total) / (sw + tw)).item())
+    return float(F.cross_entropy(total_logits, lbl, **ce_kw).item())
 
 
 def _persist_latest(
@@ -562,7 +569,7 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
     _save_config_snapshot(args)
 
     with open(Path(args.log_dir, "train_loss.log"), "w", encoding="utf-8") as lf:
-        lf.write("step\tepoch\tbatch\tloss\tspec\ttotal\n")
+        lf.write("step\tepoch\tbatch\ttotal_loss\n")
 
     train_ld, sample_ld = _dataloaders(args)
     full_ld = _full_dev_loader(args)
@@ -604,37 +611,30 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
         for g in optimizer.param_groups:
             g["lr"] = lr
 
-        for i, (feat, _, labels, class_types, _) in enumerate(
+        for i, (feat, _, labels, _class_types, _) in enumerate(
             tqdm(train_ld, leave=False, desc=f"ep {epoch}")
         ):
             wav = feat.to(args.device)
             lbl = labels.long().to(args.device)
-            ctype = class_types.long().to(args.device)
 
             optimizer.zero_grad(set_to_none=True)
-            loss, parts = compute_loss(
-                model,
-                wav,
-                lbl,
-                ctype,
-                specialist_weight=float(args.specialist_weight),
-                total_weight=float(args.total_weight),
-                class_weight=cw,
-            )
+            outs = model(wav)
+            ce_kw = {} if cw is None else {"weight": cw}
+            loss = F.cross_entropy(outs["total"], lbl, **ce_kw)
             loss.backward()
             optimizer.step()
 
             step += 1
             gs = step
             with open(Path(args.log_dir, "train_loss.log"), "a", encoding="utf-8") as lf:
-                lf.write(
-                    f"{gs}\t{epoch}\t{i}\t{loss.item():.6f}\t"
-                    f"{float(parts['loss_specialist']):.6f}\t"
-                    f"{float(parts['loss_total']):.6f}\n"
-                )
+                lf.write(f"{gs}\t{epoch}\t{i}\t{loss.item():.6f}\n")
             if use_wandb:
                 wandb.log(
-                    {"train/loss": loss.item(), "train/lr": lr, "train/specialist_loss": parts['loss_specialist'], "train/total_loss": parts['loss_total']},
+                    {
+                        "train/loss": loss.item(),
+                        "train/lr": lr,
+                        "train/total_loss": loss.item(),
+                    },
                     step=gs,
                 )
 
@@ -645,20 +645,19 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 continue
 
             mean_dev_loss = _mean_dev_loss(model, sample_ld, args, cw)
-            sco_o, lab_o, _ = _forward_scores(model, sample_ld, args, "oracle")
-            eer_o, f1_o, thr = _scores_to_metrics(
-                sco_o, lab_o, args.eval_threshold_mode, thr_fix
-            )
+            # sco_o, lab_o, _ = _forward_scores(model, sample_ld, args, "oracle")
+            # eer_o, f1_o, thr = _scores_to_metrics(
+            #     sco_o, lab_o, args.eval_threshold_mode, thr_fix
+            # )
             sco_total, lab_total, _ = _forward_scores(model, sample_ld, args, "total")
             eer_total, f1_total, thr_total = _scores_to_metrics(
                 sco_total, lab_total, args.eval_threshold_mode, thr_fix
             )
 
-            strat = getattr(args, "eval_strategy", "oracle")  #dev时采用total策略
             mv = chk_metric(
                 mean_dev_loss,
-                eer_o if strat == "oracle" else eer_total,
-                f1_o if strat == "oracle" else f1_total,
+                eer_total,
+                f1_total,
             )
             if better(mv, best_sample_val):
                 best_sample_val, no_improve = mv, 0
@@ -666,10 +665,10 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 no_improve += 1
 
             with open(Path(args.log_dir, "dev_loss.log"), "a", encoding="utf-8") as lf:
-                lf.write(
-                    f"{gs}\tsample_oracle\teer:{eer_o:.6f}\tf1:{f1_o:.6f}"
-                    f"\tthr:{thr:.4f}\tmult_ce:{mean_dev_loss:.6f}\n"
-                )
+                # lf.write(
+                #     f"{gs}\tsample_oracle\teer:{eer_o:.6f}\tf1:{f1_o:.6f}"
+                #     f"\tthr:{thr:.4f}\tmult_ce:{mean_dev_loss:.6f}\n"
+                # )
                 lf.write(
                     f"{gs}\tsample_total\teer:{eer_total:.6f}\tf1:{f1_total:.6f}"
                     f"\tthr:{thr_total:.4f}\tmult_ce:{mean_dev_loss:.6f}\n"
@@ -690,8 +689,8 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
             if use_wandb:
                 wandb.log(
                     {
-                        "sample/oracle_eer": eer_o,
-                        "sample/oracle_f1": f1_o,
+                        # "sample/oracle_eer": eer_o,
+                        # "sample/oracle_f1": f1_o,
                         "sample/total_eer": eer_total,
                         "sample/total_f1": f1_total,
                         "sample/mult_ce": mean_dev_loss,
@@ -713,13 +712,13 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 and gs % int(args.full_eval_steps) == 0
                 and gs >= int(args.eval_warmup_steps)
             ):
-                sco_f_o, lab_f_o, type_f_o = _forward_scores(model, full_ld, args, "oracle")
-                eer_f_o, f1_f_o, thr_f_o = _scores_to_metrics(
-                    sco_f_o, lab_f_o, args.eval_threshold_mode, thr_fix
-                )
-                oracle_metrics = _scores_to_detailed_metrics(
-                    sco_f_o, lab_f_o, type_f_o, args.eval_threshold_mode, thr_fix
-                )
+                # sco_f_o, lab_f_o, type_f_o = _forward_scores(model, full_ld, args, "oracle")
+                # eer_f_o, f1_f_o, thr_f_o = _scores_to_metrics(
+                #     sco_f_o, lab_f_o, args.eval_threshold_mode, thr_fix
+                # )
+                # oracle_metrics = _scores_to_detailed_metrics(
+                #     sco_f_o, lab_f_o, type_f_o, args.eval_threshold_mode, thr_fix
+                # )
                 sco_f_t, lab_f_t, type_f_t = _forward_scores(model, full_ld, args, "total")
                 eer_f_t, f1_f_t, thr_f_t = _scores_to_metrics(
                     sco_f_t, lab_f_t, args.eval_threshold_mode, thr_fix
@@ -728,13 +727,12 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                     sco_f_t, lab_f_t, type_f_t, args.eval_threshold_mode, thr_fix
                 )
                 ml_full = _mean_dev_loss(model, full_ld, args, cw)
-                eval_strat = getattr(args, "eval_strategy", "oracle")
                 chk_f = chk_metric(
                     ml_full,
-                    eer_f_o if eval_strat == "oracle" else eer_f_t,
-                    f1_f_o if eval_strat == "oracle" else f1_f_t,
+                    eer_f_t,
+                    f1_f_t,
                 )
-                selected_metrics = oracle_metrics if eval_strat == "oracle" else total_metrics
+                selected_metrics = total_metrics
                 metric_values = {
                     "f1": float(selected_metrics["macro_f1"]),
                     "loss": float(ml_full),
@@ -745,7 +743,7 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                     "epoch": epoch,
                     "metric": args.save_best_by,
                     "metric_val": chk_f,
-                    "eval_strategy": eval_strat,
+                    "eval_strategy": "total",
                     "full_loss": ml_full,
                     "selected": {
                         "eer": selected_metrics["eer"],
@@ -753,7 +751,7 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                         "accuracy": selected_metrics["accuracy"],
                         "threshold": selected_metrics["threshold"],
                     },
-                    "oracle": oracle_metrics,
+                    # "oracle": oracle_metrics,
                     "total": total_metrics,
                 }
                 step_ckpt = Path(args.out_fold, "checkpoint_all_dev", f"step_{gs}.pt")
@@ -772,13 +770,13 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 full_row = {
                     "step": gs,
                     "epoch": epoch,
-                    "eval_strategy": eval_strat,
+                    "eval_strategy": "total",
                     "save_best_by": args.save_best_by,
                     "full_loss": ml_full,
                     "selected_f1": metric_values["f1"],
                     "selected_eer": metric_values["eer"],
                     "selected_accuracy": selected_metrics["accuracy"],
-                    **_flatten_full_metrics("oracle", oracle_metrics),
+                    # **_flatten_full_metrics("oracle", oracle_metrics),
                     **_flatten_full_metrics("total", total_metrics),
                 }
                 full_csv = Path(args.out_fold, "checkpoint_all_dev", "full_eval_metrics.csv")
@@ -791,17 +789,17 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 
                 # 日志记录两个策略
                 with open(Path(args.log_dir, "dev_loss.log"), "a") as lf:
-                    lf.write(
-                        f"{gs}\tfull_oracle\teer:{eer_f_o:.6f}\tf1:{f1_f_o:.6f}"
-                        f"\tacc:{oracle_metrics['accuracy']:.6f}\tthr:{thr_f_o:.4f}"
-                        f"\tmult_ce:{ml_full:.6f}\n"
-                    )
+                    # lf.write(
+                    #     f"{gs}\tfull_oracle\teer:{eer_f_o:.6f}\tf1:{f1_f_o:.6f}"
+                    #     f"\tacc:{oracle_metrics['accuracy']:.6f}\tthr:{thr_f_o:.4f}"
+                    #     f"\tmult_ce:{ml_full:.6f}\n"
+                    # )
                     lf.write(
                         f"{gs}\tfull_total\teer:{eer_f_t:.6f}\tf1:{f1_f_t:.6f}"
                         f"\tacc:{total_metrics['accuracy']:.6f}\tthr:{thr_f_t:.4f}"
                         f"\tmult_ce:{ml_full:.6f}\n"
                     )
-                    for prefix, metrics in (("oracle", oracle_metrics), ("total", total_metrics)):
+                    for prefix, metrics in (("total", total_metrics),):
                         for t_name, tm in metrics["per_type"].items():
                             lf.write(
                                 f"{gs}\tfull_{prefix}_{t_name}"
@@ -834,8 +832,8 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 if use_wandb:
                     wandb.log(
                         {
-                            "full/oracle_eer": eer_f_o,
-                            "full/oracle_f1": f1_f_o,
+                            # "full/oracle_eer": eer_f_o,
+                            # "full/oracle_f1": f1_f_o,
                             "full/total_eer": eer_f_t,
                             "full/total_f1": f1_f_t,
                             "full/mult_ce": ml_full,
@@ -940,6 +938,8 @@ def cmd_infer(ap: argparse.Namespace) -> None:
         num_workers=args_ns.num_workers,
         pin_memory=args_ns.cuda,
     )
+    logit_pooling = str(ap.logit_pooling).strip().lower()
+    print(f"[mult] infer logit_pooling={logit_pooling}")
     if "oracle" in want:
         assert prot is not None
         missing = [n for n in ds.all_files if prot.get(n.strip(), -1) < 0]
@@ -974,7 +974,7 @@ def cmd_infer(ap: argparse.Namespace) -> None:
 
     for s in strategies:
         logits, _labels, _types, names = _aggregate_audio_logits(
-            crop_logits_by[s], crop_names
+            crop_logits_by[s], crop_names, logit_pooling=logit_pooling
         )
         score_map = {
             n: float(v)
@@ -1031,6 +1031,12 @@ def main() -> None:
     ip.add_argument("--protocol", default=None)
     ip.add_argument("--batch_size", type=int, default=None)
     ip.add_argument("--gpu", default="0")
+    ip.add_argument(
+        "--logit_pooling",
+        default="mean",
+        choices=("mean", "min"),
+        help="How to pool crop logits to audio-level logits before scoring.",
+    )
     ip.add_argument(
         "--score_threshold",
         type=float,

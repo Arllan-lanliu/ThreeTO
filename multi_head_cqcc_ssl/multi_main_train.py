@@ -3,7 +3,7 @@
 Train / infer multi-head SSL (XLSR, BEATs, or XLSR+BEATs ``cat_linear`` dual).
 
     # Single backbone (default): ssl_backbone: xlsr | beats
-    python multi_head/multi_main_train.py train --config multi_head/mult_config.yaml --gpu 0
+    python multi_head_cqcc_ssl/multi_main_train.py train --config multi_head_cqcc_ssl/mult_config.yaml --gpu 0
 
     # Dual SSL: XLSR + BEATs fused with cat_linear (requires ssl.xlsr and ssl.beats)
     #   ssl_backbone: xlsr_beats   # or: dual
@@ -12,8 +12,8 @@ Train / infer multi-head SSL (XLSR, BEATs, or XLSR+BEATs ``cat_linear`` dual).
     #   xlsr_selected_layers: [2, 11, 24]
     #   xlsr_layer_fusion: cat_proj_v1   # last | cat_proj_v1 | cat_proj_v2 | cat_linear | mean | weight_sum
 
-    python multi_head/multi_main_train.py infer \\
-        --checkpoint PATH/best.pt --config multi_head/mult_config.yaml \\
+    python multi_head_cqcc_ssl/multi_main_train.py infer \\
+        --checkpoint PATH/best.pt --config multi_head_cqcc_ssl/mult_config.yaml \\
         --wav_dir /path/to/wav --out_csv scores.csv [--strategies total,oracle,vote] \\
         [--protocol dev.csv]  # required if oracle is included \\
         [--score_threshold 0.5]
@@ -24,8 +24,8 @@ Train / infer multi-head SSL (XLSR, BEATs, or XLSR+BEATs ``cat_linear`` dual).
     After ``infer``, writes ``<out_csv_stem>_binary.csv`` (``name``, ``predict``) with the
     same threshold rule as ``scripts/inference.gen_binary_score`` (real if score >= threshold).
 
-    python multi_head/multi_main_train.py analyze-dev \\
-        --config multi_head/multi_base.yaml --gpu 0
+    python multi_head_cqcc_ssl/multi_main_train.py analyze-dev \\
+        --config multi_head_cqcc_ssl/multi_base.yaml --gpu 0
 
 ``oracle`` inference needs CSV with ``name,type`` matching filenames in ``wav_dir``.
 """
@@ -52,8 +52,8 @@ from tqdm import tqdm
 
 _ROOT = Path(__file__).resolve().parents[1]
 _rs = str(_ROOT)
-# Script lives under multi_head/; ensure repo root is searched first, otherwise
-# ``import multi_head`` resolves to sibling ``multi_head.py`` (a module), not the package dir.
+# Script lives under multi_head_cqcc_ssl/; ensure repo root is searched first,
+# otherwise package imports can resolve to sibling modules unexpectedly.
 while _rs in sys.path:
     sys.path.remove(_rs)
 sys.path.insert(0, _rs)
@@ -62,8 +62,8 @@ from data.dataset import atadd_dataset, atadd_eval_dataset
 from utils import metrics as em
 from utils.helpers import parse_filter_types, setup_seed
 
-from multi_head.analyze_dev import add_analyze_dev_parser, run_analyze_dev
-from multi_head.multi_head import (
+from multi_head_cqcc_ssl.analyze_dev import add_analyze_dev_parser, run_analyze_dev
+from multi_head_cqcc_ssl.multi_head import (
     build_mult_head_from_args,
     compute_loss,
     inference,
@@ -107,7 +107,7 @@ def load_mult_namespace(yaml_path: str) -> argparse.Namespace:
     with open(yaml_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     flat: Dict[str, Any] = {}
-    for blk in ("data", "ssl", "aug"):
+    for blk in ("data", "ssl", "cqcc", "aug"):
         node = raw.pop(blk, None)
         if isinstance(node, dict):
             flat.update(node)
@@ -150,6 +150,20 @@ def load_mult_namespace(yaml_path: str) -> argparse.Namespace:
     flat.setdefault("eval_strategy", "oracle")
     flat.setdefault("ssl_backbone", "xlsr")
     flat.setdefault("backbone_dim", None)
+    flat.setdefault("use_cqcc", True)
+    flat.setdefault("cqcc_sample_rate", 16000)
+    flat.setdefault("cqcc_hop_length", 160)
+    flat.setdefault("cqcc_n_bins", 672)
+    flat.setdefault("cqcc_bins_per_octave", 96)
+    flat.setdefault("cqcc_n_coeffs", 20)
+    flat.setdefault("cqcc_fmin", 15.625)
+    flat.setdefault("cqcc_backend", "torch")
+    flat.setdefault("cqcc_torch_n_fft", 2048)
+    flat.setdefault("cqcc_use_deltas", True)
+    flat.setdefault("cqcc_ssl_fusion_heads", 8)
+    flat.setdefault("cqcc_ssl_fusion_dropout", 0.1)
+    flat.setdefault("cqcc_ssl_fusion_dim", None)
+    flat.setdefault("cqcc_ssl_align_cqcc_to_ssl", False)
     flat.setdefault("sound_aug_methods", ["rawboost", "musan_noise", "rir_reverb"])
     flat.setdefault("rir_path", "/data/liulan/workspace/dataset/RIRS_NOISES")
     flat.setdefault("musan_path", "/data/liulan/workspace/dataset/musan")

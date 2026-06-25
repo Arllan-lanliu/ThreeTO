@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Multi-head SSL + five AASIST experts (speech / sound / singing / music / total).
+Multi-head SSL/CQCC + five AASIST experts (speech / sound / singing / music / total).
 
 - ``MultiHeadXLSR``: one backbone (XLSR or BEATs).
-- ``MultiHeadDualSSL``: XLSR + BEATs, ``cat_linear`` fusion (same as ``DualSSLModel`` in ``model.model``), then the same five experts.
+- ``MultiHeadDualSSL``: XLSR + BEATs, ``cat_linear`` fusion, optional
+  SSL-fused -> CQCC cross-attention, then the same five experts.
 
 Frame features are ``(B, T, D)`` before each ``AASIST(in_dim=D)``.
 
@@ -18,6 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model.backbone.ASSIST import AASIST
 from model.fusion import build_fusion_module
+from multi_head_cqcc_ssl.cqcc import CQCCExtractor
 
 MULT_HEAD_KEYS: Tuple[str, ...] = ("speech", "sound", "singing", "music")
 ALL_HEAD_KEYS: Tuple[str, ...] = ("speech", "sound", "singing", "music", "total")
@@ -202,9 +204,49 @@ class MultiHeadXLSR(nn.Module):
         return self
 
 
+class SSLToCQCCCrossAttention(nn.Module):
+    """Use fused SSL frames as Query and CQCC frames as Key/Value."""
+
+    def __init__(
+        self,
+        ssl_dim: int = 1024,
+        cqcc_dim: int = 60,
+        out_dim: int = 1024,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.ssl_proj = nn.Linear(ssl_dim, out_dim) if ssl_dim != out_dim else nn.Identity()
+        self.cqcc_proj = nn.Linear(cqcc_dim, out_dim)
+        self.cross_attn = nn.MultiheadAttention(
+            out_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm1 = nn.LayerNorm(out_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(out_dim, out_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(out_dim * 2, out_dim),
+        )
+        self.norm2 = nn.LayerNorm(out_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, ssl_feat: torch.Tensor, cqcc_feat: torch.Tensor) -> torch.Tensor:
+        q = self.ssl_proj(ssl_feat)
+        kv = self.cqcc_proj(cqcc_feat)
+        attended, _ = self.cross_attn(query=q, key=kv, value=kv, need_weights=False)
+        fused = self.norm1(q + self.dropout(attended))
+        return self.norm2(fused + self.dropout(self.ffn(fused)))
+
+
 class MultiHeadDualSSL(nn.Module):
     """
-    ``wav → XLSR (1024) + BEATs (768) → cat_linear → D_fused → 5 × AASIST(D_fused)``.
+    ``wav → XLSR + BEATs → cat_linear → SSL-fused Query``
+    and ``wav → CQCC → Key/Value``. Cross-attention returns the final frame
+    features consumed by five AASIST heads.
 
     Mirrors ``DualSSLModel`` time alignment (min length) + ``build_fusion_module('cat_linear', ...)``.
     ``forward`` / expert outputs match :class:`MultiHeadXLSR` so ``compute_loss`` / ``inference`` are unchanged.
@@ -225,6 +267,20 @@ class MultiHeadDualSSL(nn.Module):
         xlsr_layer_fusion: str = "last",
         beats_selected_layers: Optional[Any] = None,
         beats_layer_fusion: str = "last",
+        use_cqcc: bool = True,
+        cqcc_sample_rate: int = 16000,
+        cqcc_hop_length: int = 160,
+        cqcc_n_bins: int = 672,
+        cqcc_bins_per_octave: int = 96,
+        cqcc_n_coeffs: int = 20,
+        cqcc_fmin: float = 15.625,
+        cqcc_backend: str = "torch",
+        cqcc_torch_n_fft: int = 2048,
+        cqcc_use_deltas: bool = True,
+        cqcc_ssl_fusion_heads: int = 8,
+        cqcc_ssl_fusion_dropout: float = 0.1,
+        cqcc_ssl_fusion_dim: Optional[int] = None,
+        cqcc_ssl_align_cqcc_to_ssl: bool = False,
     ) -> None:
         super().__init__()
         from model.SSL import BEATs, XLSR
@@ -250,9 +306,36 @@ class MultiHeadDualSSL(nn.Module):
             self._DIM_BEATS,
             fused_expert_dim,
         )
-        self.backbone_dim = int(fused_expert_dim)
+        self.use_cqcc = bool(use_cqcc)
+        self.align_cqcc_to_ssl = bool(cqcc_ssl_align_cqcc_to_ssl)
+        final_expert_dim = int(cqcc_ssl_fusion_dim or fused_expert_dim)
+        if self.use_cqcc:
+            self.cqcc = CQCCExtractor(
+                sample_rate=cqcc_sample_rate,
+                hop_length=cqcc_hop_length,
+                n_bins=cqcc_n_bins,
+                bins_per_octave=cqcc_bins_per_octave,
+                n_coeffs=cqcc_n_coeffs,
+                fmin=cqcc_fmin,
+                use_deltas=cqcc_use_deltas,
+                backend=cqcc_backend,
+                torch_n_fft=cqcc_torch_n_fft,
+            )
+            self.cqcc_fusion = SSLToCQCCCrossAttention(
+                ssl_dim=fused_expert_dim,
+                cqcc_dim=self.cqcc.out_dim,
+                out_dim=final_expert_dim,
+                num_heads=cqcc_ssl_fusion_heads,
+                dropout=cqcc_ssl_fusion_dropout,
+            )
+        else:
+            self.cqcc = None
+            self.cqcc_fusion = None
+            final_expert_dim = int(fused_expert_dim)
+
+        self.backbone_dim = final_expert_dim
         self.experts = nn.ModuleDict(
-            {name: AASIST(in_dim=fused_expert_dim) for name in ALL_HEAD_KEYS}
+            {name: AASIST(in_dim=final_expert_dim) for name in ALL_HEAD_KEYS}
         )
         self._lock_xlsr_eval = False
 
@@ -269,6 +352,20 @@ class MultiHeadDualSSL(nn.Module):
         xlsr_layer_fusion: str = "last",
         beats_selected_layers: Optional[Any] = None,
         beats_layer_fusion: str = "last",
+        use_cqcc: bool = True,
+        cqcc_sample_rate: int = 16000,
+        cqcc_hop_length: int = 160,
+        cqcc_n_bins: int = 672,
+        cqcc_bins_per_octave: int = 96,
+        cqcc_n_coeffs: int = 20,
+        cqcc_fmin: float = 15.625,
+        cqcc_backend: str = "torch",
+        cqcc_torch_n_fft: int = 2048,
+        cqcc_use_deltas: bool = True,
+        cqcc_ssl_fusion_heads: int = 8,
+        cqcc_ssl_fusion_dropout: float = 0.1,
+        cqcc_ssl_fusion_dim: Optional[int] = None,
+        cqcc_ssl_align_cqcc_to_ssl: bool = False,
     ) -> "MultiHeadDualSSL":
         """XLSR + BEATs with ``cat_linear``; ``fused_dim`` is expert ``in_dim`` (default 1024)."""
         if not xlsr_model_dir:
@@ -279,9 +376,15 @@ class MultiHeadDualSSL(nn.Module):
         dev = "cuda" if cuda else "cpu"
         lf = str(xlsr_layer_fusion or "last").strip()
         bf = str(beats_layer_fusion or "last").strip()
+        final_d = int(cqcc_ssl_fusion_dim or out_d) if use_cqcc else out_d
+        cqcc_msg = (
+            f" + CQCC cross-attn → {final_d}d experts"
+            if use_cqcc
+            else f" → {out_d}d experts"
+        )
         print(
             f"[MultiHeadDualSSL] XLSR ({cls._DIM_XLSR}) + BEATs ({cls._DIM_BEATS}) "
-            f"cat_linear → {out_d}d experts",
+            f"cat_linear → {out_d}d{cqcc_msg}",
             flush=True,
         )
         print(f"  xlsr:  {xlsr_model_dir}", flush=True)
@@ -296,6 +399,14 @@ class MultiHeadDualSSL(nn.Module):
                 f"  beats_selected_layers={beats_selected_layers!r}  beats_layer_fusion={bf!r}",
                 flush=True,
             )
+        if use_cqcc:
+            print(
+                "  cqcc: "
+                f"backend={cqcc_backend} n_coeffs={cqcc_n_coeffs} "
+                f"n_bins={cqcc_n_bins} hop={cqcc_hop_length} "
+                f"heads={cqcc_ssl_fusion_heads} align={cqcc_ssl_align_cqcc_to_ssl}",
+                flush=True,
+            )
         return cls(
             xlsr_model_dir=xlsr_model_dir,
             beats_model_dir=beats_model_dir,
@@ -306,6 +417,20 @@ class MultiHeadDualSSL(nn.Module):
             xlsr_layer_fusion=lf,
             beats_selected_layers=beats_selected_layers,
             beats_layer_fusion=bf,
+            use_cqcc=use_cqcc,
+            cqcc_sample_rate=cqcc_sample_rate,
+            cqcc_hop_length=cqcc_hop_length,
+            cqcc_n_bins=cqcc_n_bins,
+            cqcc_bins_per_octave=cqcc_bins_per_octave,
+            cqcc_n_coeffs=cqcc_n_coeffs,
+            cqcc_fmin=cqcc_fmin,
+            cqcc_backend=cqcc_backend,
+            cqcc_torch_n_fft=cqcc_torch_n_fft,
+            cqcc_use_deltas=cqcc_use_deltas,
+            cqcc_ssl_fusion_heads=cqcc_ssl_fusion_heads,
+            cqcc_ssl_fusion_dropout=cqcc_ssl_fusion_dropout,
+            cqcc_ssl_fusion_dim=cqcc_ssl_fusion_dim,
+            cqcc_ssl_align_cqcc_to_ssl=cqcc_ssl_align_cqcc_to_ssl,
         )
 
     @staticmethod
@@ -315,15 +440,39 @@ class MultiHeadDualSSL(nn.Module):
             h = h[0]
         return h
 
+    @staticmethod
+    def _align_cqcc_time(cqcc_feat: torch.Tensor, target_len: int) -> torch.Tensor:
+        if cqcc_feat.size(1) == target_len:
+            return cqcc_feat
+        return F.interpolate(
+            cqcc_feat.transpose(1, 2),
+            size=target_len,
+            mode="linear",
+            align_corners=False,
+        ).transpose(1, 2)
+
     def encode_frames(self, wav: torch.Tensor) -> torch.Tensor:
-        """``(B, T)`` → aligned XLSR/BEATs frames → fused ``(B, T', D)``."""
+        """``(B, T)`` → XLSR/BEATs fusion → optional CQCC cross-attention."""
         feat_a = self._extract_frames(self.frontend_a, wav)
         feat_b = self._extract_frames(self.frontend_b, wav)
         t = min(feat_a.size(1), feat_b.size(1))
         feat_a = feat_a[:, :t, :]
         feat_b = feat_b[:, :t, :]
-        # fusion cat(dim=-1)->linear
-        return self.fusion(feat_a, feat_b)
+        ssl_feat = self.fusion(feat_a, feat_b)
+        if not self.use_cqcc:
+            return ssl_feat
+
+        assert self.cqcc is not None and self.cqcc_fusion is not None
+        cqcc_feat = self.cqcc(wav)
+        if cqcc_feat.dim() != 3:
+            raise RuntimeError(f"Expected CQCC features to be 3D, got {cqcc_feat.shape}")
+        if cqcc_feat.size(0) != ssl_feat.size(0):
+            raise RuntimeError(
+                f"Batch mismatch: ssl batch={ssl_feat.size(0)}, cqcc batch={cqcc_feat.size(0)}"
+            )
+        if self.align_cqcc_to_ssl:
+            cqcc_feat = self._align_cqcc_time(cqcc_feat, ssl_feat.size(1))
+        return self.cqcc_fusion(ssl_feat, cqcc_feat)
 
     def forward(self, wav: torch.Tensor, audio_type: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         del audio_type
@@ -379,6 +528,22 @@ def build_mult_head_from_args(args: Any) -> Union[MultiHeadXLSR, MultiHeadDualSS
             xlsr_layer_fusion=getattr(args, "xlsr_layer_fusion", "last"),
             beats_selected_layers=getattr(args, "beats_selected_layers", None),
             beats_layer_fusion=getattr(args, "beats_layer_fusion", "last"),
+            use_cqcc=bool(getattr(args, "use_cqcc", True)),
+            cqcc_sample_rate=int(getattr(args, "cqcc_sample_rate", 16000)),
+            cqcc_hop_length=int(getattr(args, "cqcc_hop_length", 160)),
+            cqcc_n_bins=int(getattr(args, "cqcc_n_bins", 672)),
+            cqcc_bins_per_octave=int(getattr(args, "cqcc_bins_per_octave", 96)),
+            cqcc_n_coeffs=int(getattr(args, "cqcc_n_coeffs", 20)),
+            cqcc_fmin=float(getattr(args, "cqcc_fmin", 15.625)),
+            cqcc_backend=str(getattr(args, "cqcc_backend", "torch")),
+            cqcc_torch_n_fft=int(getattr(args, "cqcc_torch_n_fft", 2048)),
+            cqcc_use_deltas=bool(getattr(args, "cqcc_use_deltas", True)),
+            cqcc_ssl_fusion_heads=int(getattr(args, "cqcc_ssl_fusion_heads", 8)),
+            cqcc_ssl_fusion_dropout=float(getattr(args, "cqcc_ssl_fusion_dropout", 0.1)),
+            cqcc_ssl_fusion_dim=getattr(args, "cqcc_ssl_fusion_dim", None),
+            cqcc_ssl_align_cqcc_to_ssl=bool(
+                getattr(args, "cqcc_ssl_align_cqcc_to_ssl", False)
+            ),
         )
     return MultiHeadXLSR.from_mult_config(
         cuda=cuda,

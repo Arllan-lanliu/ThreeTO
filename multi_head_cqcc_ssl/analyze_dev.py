@@ -4,9 +4,9 @@ Dev-set metrics for multi-head XLSR (Track-2): full dev (no subsample), total / 
 
 Repo root examples::
 
-    python multi_head/analyze_dev.py --config multi_head/multi_base.yaml --gpu 0
+    python multi_head_cqcc_ssl/analyze_dev.py --config multi_head_cqcc_ssl/multi_base.yaml --gpu 0
 
-    python multi_head/multi_main_train.py analyze-dev --config multi_head/multi_base.yaml --gpu 0
+    python multi_head_cqcc_ssl/multi_main_train.py analyze-dev --config multi_head_cqcc_ssl/multi_base.yaml --gpu 0
 """
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ while _rs in sys.path:
     sys.path.remove(_rs)
 sys.path.insert(0, _rs)
 
-from crop_dataset import atadd_crop_dataset
-from multi_head.multi_head import ALL_HEAD_KEYS, build_mult_head_from_args
+from data.dataset import atadd_dataset
+from multi_head_cqcc_ssl.multi_head import ALL_HEAD_KEYS, build_mult_head_from_args, inference
 from utils import metrics as em
 
 IDX_TO_TYPE = {0: "speech", 1: "sound", 2: "singing", 3: "music"}
@@ -63,12 +63,6 @@ def register_analyze_dev_args(p: argparse.ArgumentParser) -> None:
         "--strategies",
         default="total,oracle,vote",
         help="Comma-separated subset of: total,oracle,vote",
-    )
-    p.add_argument(
-        "--logit_pooling",
-        default="mean",
-        choices=("mean", "min"),
-        help="How to pool crop logits to audio-level logits before scoring.",
     )
     p.add_argument(
         "--threshold_mode",
@@ -105,7 +99,7 @@ def _scores_to_metrics(
 
 def _full_dev_loader(args: argparse.Namespace) -> DataLoader:
     ft = args.filter_types_parsed
-    ds = atadd_crop_dataset(
+    ds = atadd_dataset(
         args.atadd_t2_dev_audio,
         args.atadd_t2_dev_label,
         audio_length=args.audio_len,
@@ -130,9 +124,51 @@ def _collect_scores_one_strategy(
     device: torch.device,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray], np.ndarray]:
     """Returns scores (P real), labels 0/1, type_idx 0-3, names, all logits, selected logits."""
-    return _collect_scores_many_strategies(
-        model, loader, strategies=[strategy], device=device
-    )[strategy]
+    model.eval()
+    sc_l: List[np.ndarray] = []
+    lb_l: List[np.ndarray] = []
+    ty_l: List[np.ndarray] = []
+    nm_l: List[str] = []
+    logits_l: Dict[str, List[np.ndarray]] = {k: [] for k in ALL_HEAD_KEYS}
+    sel_logits_l: List[np.ndarray] = []
+    with torch.no_grad():
+        for feat, fnames, labels, class_types, _ in tqdm(
+            loader, leave=False, desc=f"analyze_dev[{strategy}]"
+        ):
+            wav = feat.to(device)
+            ctype = class_types.long().to(device)
+
+            if strategy == "oracle":
+                sc, all_logits = inference(model, wav, audio_type=ctype)
+                stacks = torch.stack([all_logits[k] for k in ("speech", "sound", "singing", "music")], dim=1)
+                ar = torch.arange(wav.size(0), device=device)
+                sel_logits = stacks[ar, ctype.clamp(0, 3)]
+            elif strategy == "total":
+                sc, all_logits = inference(model, wav, audio_type=None)
+                sel_logits = all_logits["total"]
+            elif strategy == "vote":
+                all_logits = model(wav)
+                probs = torch.stack([torch.softmax(all_logits[k], dim=1) for k in ALL_HEAD_KEYS], dim=1)
+                avg_prob = probs.mean(dim=1).clamp_min(1e-12)
+                sc = avg_prob[:, 0]
+                sel_logits = torch.log(avg_prob)
+            else:
+                raise ValueError(strategy)
+
+            sc_l.append(sc.detach().float().cpu().numpy())
+            lb_l.append(labels.long().numpy())
+            ty_l.append(class_types.long().numpy())
+            nm_l.extend(f.strip() for f in fnames)
+            for k in ALL_HEAD_KEYS:
+                logits_l[k].append(all_logits[k].detach().float().cpu().numpy())
+            sel_logits_l.append(sel_logits.detach().float().cpu().numpy())
+
+    scores = np.concatenate(sc_l, axis=0)
+    labels = np.concatenate(lb_l).astype(np.int64)
+    types = np.concatenate(ty_l).astype(np.int64)
+    logits = {k: np.concatenate(v, axis=0) for k, v in logits_l.items()}
+    selected_logits = np.concatenate(sel_logits_l, axis=0)
+    return scores, labels, types, np.array(nm_l), logits, selected_logits
 
 
 def _selected_head_name(strategy: str, type_idx: int) -> str:
@@ -141,7 +177,7 @@ def _selected_head_name(strategy: str, type_idx: int) -> str:
     if strategy == "oracle":
         return IDX_TO_TYPE[int(type_idx)]
     if strategy == "vote":
-        return "avg_logits"
+        return "avg_prob_log"
     raise ValueError(strategy)
 
 
@@ -151,15 +187,12 @@ def _collect_scores_many_strategies(
     *,
     strategies: List[str],
     device: torch.device,
-    logit_pooling: str = "mean",
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray], np.ndarray]]:
-    """Collect strategies with crop logits pooled back to audio-level logits."""
-    pooling = logit_pooling.strip().lower()
-    if pooling not in {"mean", "min"}:
-        raise ValueError(f"Unknown logit_pooling {logit_pooling!r} (allowed: mean, min)")
-
+    """Collect all requested strategies in one model forward per batch."""
     model.eval()
     wanted = list(dict.fromkeys(strategies))
+    sc_l: Dict[str, List[np.ndarray]] = {s: [] for s in wanted}
+    sel_logits_l: Dict[str, List[np.ndarray]] = {s: [] for s in wanted}
     logits_l: Dict[str, List[np.ndarray]] = {k: [] for k in ALL_HEAD_KEYS}
     lb_l: List[np.ndarray] = []
     ty_l: List[np.ndarray] = []
@@ -170,7 +203,31 @@ def _collect_scores_many_strategies(
             loader, leave=False, desc="analyze_dev[all]"
         ):
             wav = feat.to(device)
+            ctype = class_types.long().to(device)
             all_logits = model(wav)
+            probs = {k: torch.softmax(all_logits[k], dim=1) for k in ALL_HEAD_KEYS}
+
+            if "total" in sc_l:
+                sc_l["total"].append(probs["total"][:, 0].detach().float().cpu().numpy())
+                sel_logits_l["total"].append(all_logits["total"].detach().float().cpu().numpy())
+
+            if "oracle" in sc_l:
+                stacks = torch.stack(
+                    [all_logits[k] for k in ("speech", "sound", "singing", "music")],
+                    dim=1,
+                )
+                ar = torch.arange(wav.size(0), device=device)
+                sel_logits = stacks[ar, ctype.clamp(0, 3)]
+                sc_l["oracle"].append(
+                    torch.softmax(sel_logits, dim=1)[:, 0].detach().float().cpu().numpy()
+                )
+                sel_logits_l["oracle"].append(sel_logits.detach().float().cpu().numpy())
+
+            if "vote" in sc_l:
+                avg_prob = torch.stack([probs[k] for k in ALL_HEAD_KEYS], dim=1).mean(dim=1)
+                avg_prob = avg_prob.clamp_min(1e-12)
+                sc_l["vote"].append(avg_prob[:, 0].detach().float().cpu().numpy())
+                sel_logits_l["vote"].append(torch.log(avg_prob).detach().float().cpu().numpy())
 
             lb_l.append(labels.long().numpy())
             ty_l.append(class_types.long().numpy())
@@ -178,72 +235,19 @@ def _collect_scores_many_strategies(
             for k in ALL_HEAD_KEYS:
                 logits_l[k].append(all_logits[k].detach().float().cpu().numpy())
 
-    crop_labels = np.concatenate(lb_l).astype(np.int64)
-    crop_types = np.concatenate(ty_l).astype(np.int64)
-    crop_names = np.array(nm_l)
-
-    order: List[str] = []
-    index: Dict[str, int] = {}
-    for name in crop_names:
-        if name not in index:
-            index[name] = len(order)
-            order.append(str(name))
-
-    labels = np.zeros(len(order), dtype=np.int64)
-    types = np.zeros(len(order), dtype=np.int64)
-    counts = np.zeros(len(order), dtype=np.float32)
-    for name, label, type_idx in zip(crop_names, crop_labels, crop_types):
-        j = index[str(name)]
-        labels[j] = int(label)
-        types[j] = int(type_idx)
-        counts[j] += 1.0
-
-    logits: Dict[str, np.ndarray] = {}
-    for head, chunks in logits_l.items():
-        crop_head_logits = np.concatenate(chunks, axis=0)
-        if pooling == "mean":
-            sums = np.zeros((len(order), crop_head_logits.shape[1]), dtype=np.float32)
-            for row, name in zip(crop_head_logits, crop_names):
-                sums[index[str(name)]] += row.astype(np.float32)
-            logits[head] = sums / counts[:, None]
-        else:
-            mins = np.full((len(order), crop_head_logits.shape[1]), np.inf, dtype=np.float32)
-            for row, name in zip(crop_head_logits, crop_names):
-                j = index[str(name)]
-                mins[j] = np.minimum(mins[j], row.astype(np.float32))
-            logits[head] = mins
-
-    names = np.array(order)
+    labels = np.concatenate(lb_l).astype(np.int64)
+    types = np.concatenate(ty_l).astype(np.int64)
+    names = np.array(nm_l)
+    logits = {k: np.concatenate(v, axis=0) for k, v in logits_l.items()}
     out = {}
     for strategy in wanted:
-        if strategy == "total":
-            selected_logits = logits["total"]
-        elif strategy == "oracle":
-            stack = np.stack([logits[k] for k in ("speech", "sound", "singing", "music")], axis=1)
-            selected_logits = stack[np.arange(len(names)), np.clip(types, 0, 3)]
-        elif strategy == "vote":
-            if pooling == "mean":
-                selected_logits = np.stack([logits[k] for k in ALL_HEAD_KEYS], axis=1).mean(axis=1)
-            else:
-                crop_vote_logits = np.stack(
-                    [np.concatenate(logits_l[k], axis=0) for k in ALL_HEAD_KEYS],
-                    axis=1,
-                ).mean(axis=1)
-                mins = np.full((len(order), crop_vote_logits.shape[1]), np.inf, dtype=np.float32)
-                for row, name in zip(crop_vote_logits, crop_names):
-                    j = index[str(name)]
-                    mins[j] = np.minimum(mins[j], row.astype(np.float32))
-                selected_logits = mins
-        else:
-            raise ValueError(strategy)
-        scores = torch.softmax(torch.from_numpy(selected_logits), dim=1)[:, 0].numpy()
         out[strategy] = (
-            scores,
+            np.concatenate(sc_l[strategy], axis=0),
             labels,
             types,
             names,
             logits,
-            selected_logits,
+            np.concatenate(sel_logits_l[strategy], axis=0),
         )
     return out
 
@@ -302,7 +306,7 @@ def add_analyze_dev_parser(sub: Any) -> argparse.ArgumentParser:
 
 def run_analyze_dev(ns: argparse.Namespace) -> None:
     # Local import avoids circular dependency at module load.
-    from multi_head.multi_main_train import load_mult_namespace
+    from multi_head_cqcc_ssl.multi_main_train import load_mult_namespace
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(ns.gpu)
     args = load_mult_namespace(ns.config)
@@ -335,11 +339,10 @@ def run_analyze_dev(ns: argparse.Namespace) -> None:
 
     loader = _full_dev_loader(args)
     print(f"[analyze-dev] samples={len(loader.dataset)} checkpoint={ckpt_path}")
-    print(f"[analyze-dev] logit_pooling={ns.logit_pooling}")
     if any(s.strip().lower() == "vote" for s in strategies):
         print(
-            "[analyze-dev] vote: per-crop logits are averaged across heads, then pooled "
-            "across crops before scoring."
+            "[analyze-dev] vote: reported EER/F1 use P(real) from the total head (same as inference_vote scores); "
+            "majority argmax vote is not used as the decision statistic here."
         )
 
     summaries: Dict[str, Any] = {}
@@ -350,7 +353,6 @@ def run_analyze_dev(ns: argparse.Namespace) -> None:
         loader,
         strategies=strategies,
         device=args.device,
-        logit_pooling=ns.logit_pooling,
     )
 
     for strategy in strategies:

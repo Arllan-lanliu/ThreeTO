@@ -3,13 +3,14 @@
 
 This module deliberately lives under ``trunk_vote`` so the shared project code
 remains read-only.  It reuses the original AT-ADD dataset augmentation helpers
-but replaces the fixed "first audio_len samples" policy with deterministic
-multi-crop slicing.
+but replaces the fixed "first audio_len samples" policy with trunk-vote crop
+selection.
 """
 
 from __future__ import annotations
 
 import os
+import random
 from collections import Counter
 from typing import List, Sequence, Tuple
 
@@ -26,29 +27,23 @@ DEFAULT_SR = 16000
 
 
 def crop_starts(num_samples: int, crop_len: int, sr: int = DEFAULT_SR) -> List[int]:
-    """Return crop starts following the requested AT-ADD trunk-vote policy."""
+    """Return deterministic dev/eval 4.04s crop starts with a 2s hop."""
     if num_samples <= crop_len:
         return [0]
 
     end = max(0, num_samples - crop_len)
-    if num_samples <= int(round(6.0 * sr)):
-        return [0, end] if end > 0 else [0]
+    hop = int(round(2.0 * sr))
+    starts = list(range(0, end + 1, hop))
+    if starts[-1] != end:
+        starts.append(end)
+    return starts
 
-    if num_samples <= int(round(10.5 * sr)):
-        hop = int(round(2.0 * sr))
-        starts = list(range(0, end + 1, hop))
-        if starts[-1] != end:
-            starts.append(end)
-        return starts
 
-    starts = np.linspace(0, end, num=5)
-    out = [int(round(x)) for x in starts]
-    dedup: List[int] = []
-    for x in out:
-        x = min(max(0, x), end)
-        if not dedup or dedup[-1] != x:
-            dedup.append(x)
-    return dedup
+def random_crop_start(num_samples: int, crop_len: int) -> int:
+    """Sample one crop start uniformly for training."""
+    if num_samples <= crop_len:
+        return 0
+    return random.randint(0, num_samples - crop_len)
 
 
 def _to_1d_tensor(waveform) -> torch.Tensor:
@@ -59,8 +54,8 @@ def _to_1d_tensor(waveform) -> torch.Tensor:
     return wav.reshape(-1)
 
 
-def crop_and_repeat_pad(waveform, start: int, crop_len: int) -> torch.Tensor:
-    """Slice one crop, repeat-pad if needed, then apply original normalization."""
+def crop_and_repeat_pad(waveform, start: int, crop_len: int, normalize: bool = True) -> torch.Tensor:
+    """Slice one crop, repeat-pad if needed, then optionally normalize."""
     wav = _to_1d_tensor(waveform)
     if wav.numel() == 0:
         wav = torch.zeros(crop_len, dtype=torch.float32)
@@ -71,16 +66,66 @@ def crop_and_repeat_pad(waveform, start: int, crop_len: int) -> torch.Tensor:
         crop = torch.tile(crop, (repeats,))[:crop_len]
     else:
         crop = crop[:crop_len]
-    crop = (crop - crop.mean()) / torch.sqrt(crop.var() + 1e-7)
+    if normalize:
+        crop = (crop - crop.mean()) / torch.sqrt(crop.var() + 1e-7)
     return crop
 
 
-class atadd_crop_dataset(atadd_dataset):
-    """Protocol dataset where each crop is an item.
+class atadd_random_crop_dataset(atadd_dataset):
+    """Protocol dataset where each audio yields one random crop per access.
 
-    Train/dev share the same crop schedule.  During training every crop becomes
-    an independent sample.  During dev the filename returned by ``__getitem__``
-    lets the trainer average crop logits back to audio-level logits.
+    Training keeps the original label/type for the audio. sound/music samples
+    use one random crop; speech/singing samples keep the first crop. Protocol
+    augmentation is applied after crop selection.
+    """
+
+    def __len__(self):
+        return len(self.all_files)
+
+    def __getitem__(self, idx):
+        filename, class_type, label, generator = self.all_files[idx]
+        filepath = os.path.join(self.path_to_audio, filename)
+
+        waveform, sr = torchaudio_load(filepath)
+        if class_type in {"sound", "music"}:
+            start = random_crop_start(_to_1d_tensor(waveform).numel(), self.audio_length)
+        else:
+            start = 0
+        waveform = crop_and_repeat_pad(waveform, start, self.audio_length, normalize=False)
+
+        if self.aug_probs is not None:
+            aug_prob = self.aug_probs.get(class_type, 0.0)
+            if aug_prob > 0.0 and random.random() < aug_prob:
+                wav_np = _to_1d_tensor(waveform).cpu().numpy()
+                if class_type == "music":
+                    if self._pitch_shift_aug is not None:
+                        waveform = self._pitch_shift_aug.apply(wav_np)
+                    elif self._spec_aug is not None:
+                        waveform = self._spec_aug.apply(wav_np)
+                elif class_type == "sound":
+                    waveform = self._apply_sound_augmentation(wav_np, sr)
+                else:
+                    waveform = process_Rawboost_feature(wav_np, sr=sr, algo=5)
+
+        waveform = crop_and_repeat_pad(waveform, 0, self.audio_length)
+
+        if self.musanrir:
+            waveform = self._apply_augmentation(waveform, waveform.size(0))
+
+        return (
+            waveform,
+            filename,
+            self.label[label],
+            self.class_type[class_type],
+            generator,
+        )
+
+
+class atadd_crop_dataset(atadd_dataset):
+    """Protocol dataset where deterministic inference crops are items.
+
+    Dev returns crop-level items; callers aggregate logits back to audio-level
+    by filename before computing loss/F1/checkpoint metrics.
     """
 
     def __init__(self, *args, crop_sr: int = DEFAULT_SR, **kwargs):
